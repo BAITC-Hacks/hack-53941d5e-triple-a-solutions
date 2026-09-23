@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { createStructuredProvider } from './provider.mjs';
 import { createModel } from '../../src/prototype/model.mjs';
 
 export const SYSTEM_PROMPT = readFileSync(new URL('./system-prompt.txt', import.meta.url), 'utf8');
@@ -111,77 +112,18 @@ export function validateAnswer(answer, context) {
   });
 }
 
-export function readConfig(env = process.env) {
-  const timeout = Number(env.AI_TIMEOUT_MS || 8000);
-  return {
-    enabled: env.AI_ENABLED === 'true', model: env.AI_MODEL || '', key: env.OPENAI_API_KEY || '',
-    baseUrl: (env.AI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, ''),
-    dataApproved: env.AI_DATA_APPROVED === 'true',
-    timeoutMs: Number.isFinite(timeout) ? Math.min(9000, Math.max(100, timeout)) : 8000,
-  };
-}
+export { readConfig, configurationStatus } from './provider.mjs';
 
-export function configurationStatus(config) {
-  if (!config.enabled) return { ready: false, message: 'AI пока не подключён. Доступен подбор по правилам.' };
-  if (!config.dataApproved) return { ready: false, message: 'Для AI нужно подтвердить разрешённое использование данных в настройках сервера.' };
-  if (!config.model) return { ready: false, message: 'Модель AI ещё не выбрана в настройках сервера.' };
-  let url;
-  try { url = new URL(config.baseUrl); } catch { return { ready: false, message: 'Проверьте адрес AI-сервера.' }; }
-  if (url.username || url.password || url.search || url.hash || (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) {
-    return { ready: false, message: 'AI-сервер должен использовать HTTPS или локальный адрес.' };
-  }
-  if (url.hostname === 'api.openai.com' && !config.key) return { ready: false, message: 'На сервере не задан ключ OpenAI API.' };
-  return { ready: true, message: 'AI готов подобрать шаги с учётом цели и истории.' };
-}
-
-export function createRecommender({ config, fetchImpl = fetch, now = () => Date.now() }) {
-  const cache = new Map();
-  const pending = new Map();
-  const baseline = context => context.candidates.slice(0, 3).map(item => ({ event_id: item.event.event_id }));
+export function createRecommender(options) {
+  const provider = options.provider || createStructuredProvider(options);
   async function run(context) {
-    const start = now();
-    const fallback = message => ({ source: 'rules', message, recommendations: baseline(context), elapsedMs: now() - start });
-    if (!context.candidates.length) return fallback('В каталоге нет допустимой активности для этой цели.');
-    const status = configurationStatus(config);
-    if (!status.ready) return fallback(status.message);
-    const cacheKey = createHash('sha256').update(JSON.stringify([PROMPT_VERSION, config.model, config.baseUrl, context.payload])).digest('hex');
-    const hit = cache.get(cacheKey);
-    if (hit && now() - hit.created < 300_000) return { ...hit.result, cached: true, elapsedMs: now() - start };
-    if (pending.has(cacheKey)) return pending.get(cacheKey);
-    if (pending.size >= 3) return fallback('AI занят. Пока показан подбор по правилам; попробуйте позже.');
-    const task = (async () => {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), config.timeoutMs);
-      try {
-        const response = await fetchImpl(`${config.baseUrl}/responses`, {
-          method: 'POST', signal: controller.signal, redirect: 'error',
-          headers: { 'Content-Type': 'application/json', ...(config.key ? { Authorization: `Bearer ${config.key}` } : {}) },
-          body: JSON.stringify({
-            model: config.model, store: false, instructions: SYSTEM_PROMPT,
-            input: JSON.stringify(context.payload), max_output_tokens: 1600,
-            text: { format: { type: 'json_schema', name: 'career_recommendations', strict: true, schema: outputSchema(context) } },
-          }),
-        });
-        if (!response.ok) throw new Error('provider_error');
-        const body = await response.json();
-        if (body.status && body.status !== 'completed') throw new Error('incomplete_output');
-        const content = (body.output || []).filter(item => item.type === 'message').flatMap(item => item.content || []);
-        if (content.some(item => item.type === 'refusal')) throw new Error('refusal');
-        const text = content.filter(item => item.type === 'output_text').map(item => item.text).join('');
-        const recommendations = validateAnswer(JSON.parse(text), context);
-        const result = { source: 'ai', recommendations, model: config.model, promptVersion: PROMPT_VERSION,
-          elapsedMs: now() - start, cached: false, message: 'AI выбрал следующие шаги. Условия участия и ссылки на факты проверены приложением.' };
-        if (cache.size >= 100) cache.delete(cache.keys().next().value);
-        cache.set(cacheKey, { created: now(), result });
-        return result;
-      } catch {
-        return fallback(controller.signal.aborted
-          ? 'AI не успел ответить. Показан подбор по правилам; можно повторить запрос.'
-          : 'Ответ AI недоступен или не прошёл проверку. Показан подбор по правилам.');
-      } finally { clearTimeout(timer); }
-    })();
-    pending.set(cacheKey, task);
-    try { return await task; } finally { pending.delete(cacheKey); }
+    const baseline = context.candidates.slice(0, 3).map(item => ({ event_id: item.event.event_id }));
+    if (!context.candidates.length) return { source: 'rules', recommendations: [], message: 'В каталоге нет допустимой активности для этой цели.' };
+    const result = await provider.run({ name: 'career_recommendations', prompt: SYSTEM_PROMPT,
+      payload: context.payload, schema: outputSchema(context), validate: answer => validateAnswer(answer, context) });
+    const { value, ...metadata } = result;
+    return { ...metadata, recommendations: value || baseline, promptVersion: PROMPT_VERSION,
+      message: result.source === 'ai' ? 'AI выбрал следующие шаги. Условия участия и ссылки на факты проверены приложением.' : result.message };
   }
-  return { run, status: () => configurationStatus(config) };
+  return { run, status: provider.status };
 }

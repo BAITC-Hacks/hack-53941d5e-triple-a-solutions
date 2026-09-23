@@ -1,5 +1,7 @@
-import { createModel, GRADES } from './model.mjs';
+import { GRADES } from './model.mjs';
 import { createAiClient } from './ai-client.mjs';
+import { restoreProgress, saveProgress } from './local-progress.mjs';
+import { createWorkshop } from './workshop-ui.mjs';
 
 const app = document.querySelector('#app');
 const dialog = document.querySelector('#details');
@@ -39,9 +41,17 @@ const title = event => eventTitles[Number(event.event_id.slice(3)) - 1] || event
 const roleName = role => roles[role] || role;
 const initials = name => name.split(' ').slice(0, 2).map(part => part[0]).join('');
 const date = value => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short' }).format(new Date(value + 'T12:00:00'));
-let data, model, employeeId = 'E0005', view = 'employee', toastTimer;
+let data, model, workshop, progress, employeeId = 'E0005', view = 'employee', toastTimer;
 const aiClient = createAiClient();
 let aiStatus = { ready: false, message: 'Проверяем доступность AI…' }, aiMode = false;
+
+function persist(extra = {}) {
+  Object.assign(progress, extra);
+  let success = false;
+  try { success = saveProgress(data, model, progress, window.localStorage); } catch { /* Browser may block storage. */ }
+  if (!success) toast('Браузер не сохранил изменения. Черновик HR можно скачать файлом.');
+  return success;
+}
 
 function recommendationView(employee) {
   const state = model.snapshot(employee);
@@ -123,13 +133,14 @@ function employeePage(employee) {
       <p class="subline">${escape(goalDescription)}</p><button class="button" data-action="goal">Выбрать цель ${icon('arrow', 16)}</button>
       ${sameRole ? `<div class="career-track" aria-label="Грейды">${GRADES.map((grade, index) => `${index ? '<span class="track-line"></span>' : ''}<span class="stage ${grade === employee.grade ? 'current' : grade === state.goal.grade ? 'target' : ''}"><i></i>${grade}</span>`).join('')}</div>` : ''}</div>
       <div class="ring" style="--value:${state.coverage}"><div class="ring-inner"><b>${state.coverage}%</b><span>требований по навыкам закрыто</span></div></div></section>
+    ${workshop.journey(state)}
     <div class="section-head"><h2>Ваш следующий шаг</h2><span>${selection.isAi ? 'Выбор AI · факты из профиля' : 'Подбор по правилам'}</span></div>
     ${aiPanel(selection)}
     ${recs.length ? `<div class="cards">${recs.map(courseCard).join('')}</div>` : `<div class="empty"><h3>${state.gaps.length ? 'В каталоге пока нет подходящего шага' : 'Требования по навыкам закрыты'}</h3><p>${state.gaps.length ? 'Мы проверили роль, грейд, условия участия и историю. Можно обсудить новую активность с HR или изменить цель.' : 'Курсы не означают автоматическое повышение. Обсудите дальнейший путь с руководителем.'}</p></div>`}
     <div class="two-columns"><section class="panel"><h2>Навыки для цели</h2><p class="panel-intro">Текущий уровень / требуемый. Сначала — ключевые навыки.</p>${state.requirements.slice(0, 5).map(skillRow).join('')}
       <button class="button ghost" style="margin-top:15px" data-action="skills">Все навыки (${state.requirements.length}) ${icon('arrow', 15)}</button></section>
       <section class="panel"><h2>Последняя активность</h2><p class="panel-intro">История обучения и ваши шаги в этом макете.</p>${history.map(row => `<div class="history-row"><div class="history-icon ${row.status === 'completed' ? '' : 'neutral'}">${icon(row.status === 'completed' ? 'check' : 'clock', 15)}</div><div><strong>${escape(title(model.eventMap.get(row.event_id)))}</strong><p>${row.demo ? 'Только в демо' : date(row.date)} · ${statuses[row.status] || escape(row.status)}</p></div></div>`).join('') || '<p class="subtitle">Истории пока нет.</p>'}</section></div>
-    <p class="footnote">Прогресс показывает покрытие требований по навыкам, а не вероятность повышения. Завершения после оценки учитываются по дате из истории; для самостоятельных курсов это приближение. Все изменения в макете сбрасываются при обновлении страницы.</p>`;
+    <p class="footnote">Прогресс показывает покрытие требований по навыкам, а не вероятность повышения. Завершения после оценки учитываются по дате из истории; для самостоятельных курсов это приближение. Цели, демо-прогресс и планы сохраняются в этом браузере.</p>`;
 }
 
 function hrPage() {
@@ -155,12 +166,13 @@ function render() {
   employeeId = employee.employee_id;
   app.innerHTML = `<div class="shell"><aside class="sidebar"><div><div class="brand"><span class="brand-mark">${icon('chart', 23)}</span>Career Quest</div><div class="workspace">ПРОСТРАНСТВО РАЗВИТИЯ</div></div>
     <nav aria-label="Основные разделы"><p class="nav-label">Рабочее пространство</p><button class="nav-button ${view === 'employee' ? 'active' : ''}" ${view === 'employee' ? 'aria-current="page"' : ''} data-action="employee">${icon('road')}Мой рост</button>
-      <button class="nav-button ${view === 'hr' ? 'active' : ''}" ${view === 'hr' ? 'aria-current="page"' : ''} data-action="hr">${icon('team')}Обзор HR</button></nav>
+      <button class="nav-button ${view === 'hr' ? 'active' : ''}" ${view === 'hr' ? 'aria-current="page"' : ''} data-action="hr">${icon('team')}Обзор HR</button>
+      <button class="nav-button ${view === 'workshop' ? 'active' : ''}" ${view === 'workshop' ? 'aria-current="page"' : ''} data-action="workshop">${icon('book')}Мастерская HR</button></nav>
     <div class="sidebar-note"><strong>Ваш следующий шаг</strong>Выберите цель, сравните рекомендации и посмотрите, какие навыки развивает активность.<br><br>${aiStatus.ready ? 'AI помогает выбрать шаг. Прирост навыков рассчитывается по данным.' : 'Пока доступен подбор по правилам.'}</div>
-    <div class="sidebar-bottom"><span class="avatar">${view === 'hr' ? 'HR' : escape(initials(employee.full_name))}</span><div>${view === 'hr' ? 'Режим HR' : escape(employee.full_name.split(' ')[0])}<small>${view === 'hr' ? 'Демонстрация роли' : employee.grade + ' · учебный профиль'}</small></div></div></aside>
-    <main class="main"><header class="topbar"><div class="breadcrumb"><span>Рабочее пространство /</span><strong>${view === 'hr' ? 'Обзор HR' : 'Мой рост'}</strong></div>
+    <div class="sidebar-bottom"><span class="avatar">${view !== 'employee' ? 'HR' : escape(initials(employee.full_name))}</span><div>${view !== 'employee' ? 'Режим HR' : escape(employee.full_name.split(' ')[0])}<small>${view !== 'employee' ? 'Демонстрация роли' : employee.grade + ' · учебный профиль'}</small></div></div></aside>
+    <main class="main"><header class="topbar"><div class="breadcrumb"><span>Рабочее пространство /</span><strong>${view === 'workshop' ? 'Мастерская HR' : view === 'hr' ? 'Обзор HR' : 'Мой рост'}</strong></div>
       <div class="top-actions"><span class="prototype-badge">Черновой прототип</span><button class="button secondary" data-action="reset">Сбросить демо</button></div></header>
-      <div class="content">${view === 'hr' ? hrPage() : employeePage(employee)}<p class="footnote">Модельная дата: ${date(data.asOf)} 2026 · HackAlem AI</p></div></main></div>`;
+      <div class="content">${view === 'workshop' ? workshop.hrPage() : view === 'hr' ? hrPage() : employeePage(employee)}<p class="footnote">Модельная дата: ${date(data.asOf)} 2026 · HackAlem AI</p></div></main></div>`;
 }
 
 function openDialog(content) {
@@ -207,6 +219,7 @@ function action(event) {
   const button = event.target.closest('[data-action]');
   if (!button) return;
   const actionName = button.dataset.action;
+  if (workshop.action(actionName, button)) return;
   if (actionName === 'ai') { void requestAi(); return; }
   if (actionName === 'compare') return compareDialog();
   if (actionName === 'close') return dialog.close();
@@ -218,27 +231,29 @@ function action(event) {
   }
   if (actionName === 'complete') {
     if (model.complete(employeeId, button.dataset.event)) {
-      dialog.close(); render(); toast('Активность завершена в демо. Навыки и рекомендации пересчитаны.'); refreshAiAfterChange();
+      persist(); dialog.close(); render(); toast('Активность завершена в демо. Навыки и рекомендации пересчитаны.'); refreshAiAfterChange();
     } else toast('Активность уже завершена или больше не подходит.');
     return;
   }
-  if (actionName === 'reset') { model.reset(); aiClient.reset(); aiMode = false; dialog.close(); render(); toast('Изменения демо сброшены. Исходные данные восстановлены.'); return; }
+  if (actionName === 'reset') { model.reset(); workshop.reset(); aiClient.reset(); aiMode = false; dialog.close(); render(); toast('Изменения демо и сохранённые черновики сброшены.'); return; }
   if (actionName === 'person') { employeeId = button.dataset.person; view = 'employee'; }
-  else view = actionName === 'hr' ? 'hr' : 'employee';
+  else view = ['hr', 'workshop'].includes(actionName) ? actionName : 'employee';
   render(); window.scrollTo({ top: 0, behavior: 'instant' });
 }
 
 app.addEventListener('click', action);
 dialog.addEventListener('click', action);
 app.addEventListener('change', event => {
+  if (workshop.change(event)) return;
   if (event.target.id === 'employee-picker') { employeeId = event.target.value; render(); document.querySelector('#employee-picker')?.focus(); refreshAiAfterChange(); }
 });
+app.addEventListener('submit', event => { void workshop.submit(event); });
 dialog.addEventListener('submit', event => {
   if (event.target.id !== 'goal-form') return;
   event.preventDefault();
   const form = new FormData(event.target);
   if (model.setGoal(employeeId, form.get('role'), form.get('grade'))) {
-    dialog.close(); render(); toast('Цель обновлена. Подобрали следующие шаги.'); refreshAiAfterChange();
+    persist(); dialog.close(); render(); toast('Цель обновлена. Подобрали следующие шаги.'); refreshAiAfterChange();
   }
 });
 
@@ -247,7 +262,12 @@ try {
   if (!response.ok) throw new Error('Нет локального файла данных');
   data = await response.json();
   if (!data.employees?.length || !data.events?.length) throw new Error('Неполный набор данных');
-  model = createModel(data);
+  let storage;
+  try { storage = window.localStorage; } catch { /* Optional local persistence. */ }
+  progress = restoreProgress(data, storage);
+  model = progress.model;
+  workshop = createWorkshop({ data, getModel: () => model, getEmployee: () => data.employees.find(p => p.employee_id === employeeId),
+    rerender: render, toast, saved: progress, persist, eventTitle: title });
   render();
   fetch('/api/ai/status').then(response => {
     if (!response.ok) throw new Error('unavailable');

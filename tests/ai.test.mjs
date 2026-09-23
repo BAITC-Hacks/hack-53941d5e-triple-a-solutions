@@ -58,8 +58,8 @@ test('provider output must cite three factors for the selected eligible event', 
   assert.throws(() => validateAnswer({ recommendations: [] }, context));
 });
 
-test('disabled or unapproved AI never calls provider; localhost may work without a key', async () => {
-  for (const options of [{ enabled: false }, { dataApproved: false }, { model: '' }, { baseUrl: 'http://remote.example/v1' }]) {
+test('disabled or unconfigured AI never calls provider; localhost may work without a key', async () => {
+  for (const options of [{ enabled: false }, { key: '' }, { model: '' }, { baseUrl: 'http://remote.example/v1' }]) {
     const service = createRecommender({ config: { ...config, ...options }, fetchImpl: () => { assert.fail('unexpected external call'); } });
     const result = await service.run(context);
     assert.equal(result.source, 'rules');

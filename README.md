@@ -18,13 +18,13 @@ node scripts/serve.mjs
 Команда `python3 scripts/prepare-demo-data.py --source /path/to/career_quest_dataset` нужна, только если организаторы выдадут обновлённый набор.
 Подробнее: [описание прототипа](src/prototype/README.md).
 
-AI по умолчанию выключен. Настройка разрешённого провайдера и сравнение с исходным алгоритмом: [AI-подбор](docs/ai-recommendations.md). Ключ хранится только на сервере в `.env.local`.
+Работают карта развития с последовательными квестами и мастерская HR для улучшения активностей. Без ключа доступны расчёты и черновики по правилам. Для AI достаточно заполнить `OPENAI_API_KEY` в `.env.local` и обновить страницу: модель и подключение уже настроены. [Инструкция и ограничения](docs/ai-recommendations.md). Ключ хранится только на сервере.
 
 ## Начать работу
 
 ```sh
-git clone https://github.com/mxwqs/hackalem-ai.git
-cd hackalem-ai
+git clone https://github.com/BAITC-Hacks/hack-53941d5e-triple-a-solutions.git
+cd hack-53941d5e-triple-a-solutions
 ```
 
 Если `.env.local` ещё нет, скопируйте `.env.example` в `.env.local` и заполните нужные ключи локально. Не перезаписывайте существующий файл.
