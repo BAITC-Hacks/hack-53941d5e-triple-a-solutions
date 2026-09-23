@@ -207,3 +207,6 @@ dialog::backdrop { background: #12272d70; backdrop-filter: blur(3px); }
   .quest-body { padding: 13px; }
   .draft-block { padding: 13px; }
 }
+
+.import-option { display: flex; gap: 10px; align-items: center; margin: 20px 0; }
+.import-example { overflow: auto; white-space: pre-wrap; background: #f5f7fb; padding: 14px; border-radius: 8px; }

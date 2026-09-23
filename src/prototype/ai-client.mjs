@@ -7,11 +7,11 @@ export function requestFor(state) {
 }
 
 // Each result belongs to an exact profile/goal/completion state; late responses cannot replace another profile.
-export function createAiClient(fetchImpl = fetch) {
+export function createAiClient(fetchImpl = fetch, getVersion = () => undefined) {
   const states = new Map();
   const controllers = new Set();
   let generation = 0;
-  const keyFor = state => JSON.stringify(requestFor(state));
+  const keyFor = state => JSON.stringify({ ...requestFor(state), datasetVersion: getVersion() });
   return {
     get(state) { return states.get(keyFor(state)) || { status: 'idle' }; },
     async request(state) {
@@ -27,13 +27,13 @@ export function createAiClient(fetchImpl = fetch) {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: key, signal: controller.signal,
         });
-        if (!response.ok) throw new Error('unavailable');
+        if (!response.ok) throw new Error(response.status === 409 ? 'stale' : 'unavailable');
         const result = await response.json();
         if (!['ai', 'rules'].includes(result.source) || !Array.isArray(result.recommendations)) throw new Error('invalid');
         if (generation === version) states.set(key, { status: 'done', result });
-      } catch {
+      } catch (error) {
         if (generation === version) states.set(key, { status: 'done', result: {
-          source: 'rules', recommendations: [], message: 'AI не ответил. Доступен подбор по правилам; попробуйте ещё раз.',
+          source: 'rules', recommendations: [], message: error.message === 'stale' ? 'Набор данных изменился. Обновите страницу.' : 'AI не ответил. Доступен подбор по правилам; попробуйте ещё раз.',
         } });
       } finally { clearTimeout(timer); controllers.delete(controller); }
       if (states.size > 100) states.delete(states.keys().next().value);

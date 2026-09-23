@@ -1,4 +1,4 @@
-import { createModel } from './model.mjs';
+import { createModel, applyGain } from './model.mjs';
 
 export function planOptions(input = {}) {
   const weeklyHours = Number(input.weeklyHours ?? 4), maxSteps = Number(input.maxSteps ?? 4);
@@ -14,6 +14,23 @@ export function buildDevelopmentPaths(data, state, input = {}) {
   if (options.focusSkill && !state.requirements.some(skill => skill.id === options.focusSkill)) throw new Error('Навык не относится к выбранной цели.');
   // Planning explores a single employee's state; it never awards actual completion or promotes their grade.
   const person = state.employee;
+  // Walk backwards through prerequisite skills, including skills outside the target role.
+  const catalog = data.events.filter(e => !e.mandatory && e.target_roles.includes(person.role) && e.target_grades.includes(person.grade)
+    && (!state.done.has(e.event_id) || e.event_id === 'EV_036') && !state.simulated.includes(e.event_id)
+    && (e.format === 'self_paced' || e.upcoming_sessions.some(date => date >= data.asOf)));
+  const needed = new Map(state.gaps.map(skill => [skill.id, skill.required]));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const event of catalog) {
+      const useful = event.develops_skills.some(g => (state.levels[g.skill_id] || 0) < (needed.get(g.skill_id) || 0)
+        && applyGain(state.levels[g.skill_id] || 0, g.gain, g.max_level) > (state.levels[g.skill_id] || 0));
+      if (!useful) continue;
+      for (const [id, level] of Object.entries(event.prerequisites)) if (level > (needed.get(id) || 0) && level > (state.levels[id] || 0)) {
+        needed.set(id, level); changed = true;
+      }
+    }
+  }
   const subset = { ...data, employees: [person], history: data.history.filter(row => row.employee_id === person.employee_id) };
   const modelFor = completed => {
     const model = createModel(subset, new Map([[person.employee_id, completed]]));
@@ -22,7 +39,9 @@ export function buildDevelopmentPaths(data, state, input = {}) {
   };
   const score = node => {
     const gain = state.requirements.reduce((sum, skill) => sum + Math.max(0, Math.min(skill.required, node.levels[skill.id] || 0) - Math.min(skill.required, skill.level)) * (skill.id === options.focusSkill ? 8 : skill.critical ? 3 : 1), 0);
-    return gain * 100 - node.hours - node.setbacks * 2;
+    const preparation = [...needed].filter(([id]) => !state.gaps.some(s => s.id === id)).reduce((sum, [id, required]) =>
+      sum + Math.max(0, Math.min(required, node.levels[id] || 0) - Math.min(required, state.levels[id] || 0)), 0);
+    return gain * 100 + preparation * 25 - node.hours - node.setbacks * 2;
   };
   let beam = [{ completed: [...state.simulated], steps: [], date: data.asOf, hours: 0, levels: state.levels, coverage: state.coverage, setbacks: 0 }];
   const results = [];
@@ -30,7 +49,7 @@ export function buildDevelopmentPaths(data, state, input = {}) {
     const expanded = [];
     for (const node of beam) {
       const model = modelFor(node.completed);
-      const candidates = model.recommend(person).map(item => ({ ...item,
+      const candidates = model.available(person).filter(item => item.skillGains.some(s => s.level < (needed.get(s.id) || 0))).map(item => ({ ...item,
         start: item.event.format === 'self_paced' ? node.date : [...item.event.upcoming_sessions].sort().find(date => date >= node.date),
       })).filter(item => item.start);
       // Focus affects exploration, while prerequisites/role/grade and caps stay hard constraints.
@@ -40,19 +59,26 @@ export function buildDevelopmentPaths(data, state, input = {}) {
         const next = modelFor(completed).snapshot(person);
         const end = addDays(item.start, Math.max(1, Math.ceil(item.event.duration_hours / options.weeklyHours * 7)));
         const prerequisites = Object.entries(item.event.prerequisites).map(([id, required]) => ({ id, name: model.skillMap.get(id)?.name || id, required, level: node.levels[id] || 0 }));
+        const impact = item.skillGains.filter(s => s.level < (needed.get(s.id) || 0)).map(s => ({ id: s.id, name: s.name,
+          before: s.level, after: s.after, required: needed.get(s.id), critical: state.requirements.find(r => r.id === s.id)?.critical || false }));
+        const preparatory = !item.impact.length;
+        const unlocks = catalog.filter(e => e.event_id !== item.event.event_id && impact.some(s =>
+          (e.prerequisites[s.id] || 0) > s.before && e.prerequisites[s.id] <= s.after)).map(e => e.title);
         expanded.push({ completed, date: end, hours: node.hours + item.event.duration_hours,
           levels: next.levels, coverage: next.coverage, setbacks: node.setbacks + item.setbacks,
           steps: [...node.steps, { event_id: item.event.event_id, title: item.event.title, durationHours: item.event.duration_hours,
             start: item.start, end, coverageBefore: node.coverage, coverageAfter: next.coverage, prerequisites,
-            impact: item.impact.map(s => ({ id: s.id, name: s.name, before: s.level, after: s.after, required: s.required, critical: s.critical })),
-            reason: `Шаг сокращает разрыв по навыкам: ${item.impact.map(s => `${s.name} ${s.level} → ${s.after}`).join('; ')}. Условия участия на этом этапе выполнены.`,
+            impact, preparatory,
+            reason: preparatory ? `Подготовка: ${impact.map(s => `${s.name} ${s.before} → ${s.after}`).join('; ')}. Выполняет часть условий для: ${unlocks.join(', ') || 'следующих активностей маршрута'}.`
+              : `Шаг сокращает разрыв по навыкам: ${item.impact.map(s => `${s.name} ${s.level} → ${s.after}`).join('; ')}. Условия участия на этом этапе выполнены.`,
           }],
         });
       }
     }
     expanded.sort((a, b) => score(b) - score(a) || a.steps.map(s => s.event_id).join().localeCompare(b.steps.map(s => s.event_id).join()));
     beam = expanded.slice(0, 8);
-    results.push(...beam);
+    // Do not offer an unfinished prerequisite-only route or a preparatory tail without a payoff.
+    results.push(...beam.filter(node => !node.steps.at(-1).preparatory));
     if (!beam.length) break;
   }
   const seen = new Set();
@@ -64,8 +90,8 @@ export function buildDevelopmentPaths(data, state, input = {}) {
       goal: state.goal, baseCompletions: [...state.simulated], options,
       coverageBefore: state.coverage, coverageAfter: node.coverage, totalHours: node.hours,
       start: data.asOf, end: node.date, steps: node.steps,
-      statChanges: state.requirements.filter(s => (node.levels[s.id] || 0) > s.level)
-        .map(s => ({ id: s.id, name: s.name, before: s.level, after: node.levels[s.id], required: s.required })),
+      statChanges: [...needed].filter(([id]) => (node.levels[id] || 0) > (state.levels[id] || 0))
+        .map(([id, required]) => ({ id, name: data.skills.find(s => s.skill_id === id)?.name || id, before: state.levels[id] || 0, after: node.levels[id], required })),
       remainingGaps: state.requirements.filter(s => (node.levels[s.id] || 0) < s.required).map(s => s.name),
     }));
 }
@@ -79,12 +105,12 @@ export function planProgress(plan, state) {
   return { valid: true, done: actual.length - plan.baseCompletions.length };
 }
 
-export function activityContext(data, eventId) {
+export function activityContext(data, eventId, model = createModel(data)) {
   const event = data.events.find(item => item.event_id === eventId && !item.mandatory);
   if (!event) throw new Error('Выберите добровольную активность из каталога.');
-  const model = createModel(data);
   const audience = data.employees.filter(person => event.target_roles.includes(person.role) && event.target_grades.includes(person.grade));
   const states = audience.map(model.snapshot);
+  const simulated = data.employees.filter(person => model.snapshot(person).simulated.includes(eventId)).length;
   const history = data.history.filter(row => row.event_id === eventId && row.date <= data.asOf);
   const completed = history.filter(row => row.status === 'completed').length;
   const setbacks = history.filter(row => ['no_show', 'declined', 'dropped'].includes(row.status)).length;
@@ -95,11 +121,11 @@ export function activityContext(data, eventId) {
   const skills = skillIds.map(id => ({ id, name: model.skillMap.get(id)?.name || id, peopleWithGap: needs.get(id) || 0, existing: event.develops_skills.some(g => g.skill_id === id) }));
   const evidence = [
     { id: 'audience', text: `В текущую аудиторию по роли и грейду входят ${audience.length} сотрудников. Предварительные требования к навыкам пока не выполнены у ${blocked}.` },
-    { id: 'history', text: `История этой активности: ${history.length} записей, ${completed} завершений, ${setbacks} пропусков, отказов или прерываний. Это число записей, а не уникальных людей; причины неизвестны.` },
+    { id: 'history', text: `История этой активности: ${history.length} записей, ${completed} завершений, ${setbacks} пропусков, отказов или прерываний. Дополнительно в текущем демо: ${simulated} завершений. Это число записей, а не уникальных людей; причины неизвестны.` },
     { id: 'design', text: `Формат: ${event.format}; длительность: ${event.duration_hours} ч. Числовой прирост и потолки навыков заданы датасетом.` },
     ...skills.map(skill => ({ id: `skill:${skill.id}`, text: `${skill.name}: пробел относительно цели у ${skill.peopleWithGap} сотрудников целевой аудитории. ${skill.existing ? 'Навык уже есть в программе.' : 'Возможная тема дополнения, пока не включена в прирост навыков.'}` })),
   ];
-  return { event, skills, evidence, stats: { audience: audience.length, blocked, records: history.length, completed, setbacks } };
+  return { event, skills, evidence, stats: { audience: audience.length, blocked, records: history.length + simulated, completed: completed + simulated, setbacks, simulated } };
 }
 
 export function baselineActivityDraft(context) {

@@ -2,6 +2,7 @@ import { GRADES } from './model.mjs';
 import { createAiClient } from './ai-client.mjs';
 import { restoreProgress, saveProgress } from './local-progress.mjs';
 import { createWorkshop } from './workshop-ui.mjs';
+import { createImportUi } from './import-ui.mjs';
 
 const app = document.querySelector('#app');
 const dialog = document.querySelector('#details');
@@ -42,7 +43,9 @@ const roleName = role => roles[role] || role;
 const initials = name => name.split(' ').slice(0, 2).map(part => part[0]).join('');
 const date = value => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short' }).format(new Date(value + 'T12:00:00'));
 let data, model, workshop, progress, employeeId = 'E0005', view = 'employee', toastTimer;
-const aiClient = createAiClient();
+let datasetInfo;
+const aiClient = createAiClient(fetch, () => datasetInfo?.version);
+const importer = createImportUi({ getDataset: () => datasetInfo, applyDataset: loadDataset, rerender: render, toast });
 let aiStatus = { ready: false, message: 'Проверяем доступность AI…' }, aiMode = false;
 
 function persist(extra = {}) {
@@ -146,7 +149,7 @@ function employeePage(employee) {
 function hrPage() {
   const overview = model.overview();
   const people = overview.noSteps.slice(0, 6);
-  return `<div class="page-heading"><div><h1>Развитие команды</h1><p class="subtitle">Где нужна поддержка и каких возможностей пока не хватает.</p></div><span class="tag">${data.employees.length} синтетических профилей</span></div>
+  return `<div class="page-heading"><div><h1>Развитие команды</h1><p class="subtitle">Где нужна поддержка и каких возможностей пока не хватает.</p></div><span class="tag">${data.employees.length} профилей текущего набора</span></div>
     <div class="notice">Это демонстрация экрана HR. Переключение ролей открыто для знакомства с продуктом; авторизация и разграничение доступа пока не реализованы.</div>
     <div class="stats"><div class="stat"><span>Сотрудников</span><b>${data.employees.length}</b><small>8 профессиональных ролей</small></div>
       <div class="stat"><span>Нужно выбрать цель</span><b>${overview.noGoal}</b><small>Пока показана предполагаемая</small></div>
@@ -167,12 +170,12 @@ function render() {
   app.innerHTML = `<div class="shell"><aside class="sidebar"><div><div class="brand"><span class="brand-mark">${icon('chart', 23)}</span>Career Quest</div><div class="workspace">ПРОСТРАНСТВО РАЗВИТИЯ</div></div>
     <nav aria-label="Основные разделы"><p class="nav-label">Рабочее пространство</p><button class="nav-button ${view === 'employee' ? 'active' : ''}" ${view === 'employee' ? 'aria-current="page"' : ''} data-action="employee">${icon('road')}Мой рост</button>
       <button class="nav-button ${view === 'hr' ? 'active' : ''}" ${view === 'hr' ? 'aria-current="page"' : ''} data-action="hr">${icon('team')}Обзор HR</button>
-      <button class="nav-button ${view === 'workshop' ? 'active' : ''}" ${view === 'workshop' ? 'aria-current="page"' : ''} data-action="workshop">${icon('book')}Мастерская HR</button></nav>
+      <button class="nav-button ${view === 'workshop' ? 'active' : ''}" ${view === 'workshop' ? 'aria-current="page"' : ''} data-action="workshop">${icon('book')}Мастерская HR</button><button class="nav-button ${view === 'import' ? 'active' : ''}" data-action="import">${icon('book')}Данные жюри</button></nav>
     <div class="sidebar-note"><strong>Ваш следующий шаг</strong>Выберите цель, сравните рекомендации и посмотрите, какие навыки развивает активность.<br><br>${aiStatus.ready ? 'AI помогает выбрать шаг. Прирост навыков рассчитывается по данным.' : 'Пока доступен подбор по правилам.'}</div>
     <div class="sidebar-bottom"><span class="avatar">${view !== 'employee' ? 'HR' : escape(initials(employee.full_name))}</span><div>${view !== 'employee' ? 'Режим HR' : escape(employee.full_name.split(' ')[0])}<small>${view !== 'employee' ? 'Демонстрация роли' : employee.grade + ' · учебный профиль'}</small></div></div></aside>
-    <main class="main"><header class="topbar"><div class="breadcrumb"><span>Рабочее пространство /</span><strong>${view === 'workshop' ? 'Мастерская HR' : view === 'hr' ? 'Обзор HR' : 'Мой рост'}</strong></div>
+    <main class="main"><header class="topbar"><div class="breadcrumb"><span>Рабочее пространство /</span><strong>${view === 'import' ? 'Данные жюри' : view === 'workshop' ? 'Мастерская HR' : view === 'hr' ? 'Обзор HR' : 'Мой рост'}</strong></div>
       <div class="top-actions"><span class="prototype-badge">Черновой прототип</span><button class="button secondary" data-action="reset">Сбросить демо</button></div></header>
-      <div class="content">${view === 'workshop' ? workshop.hrPage() : view === 'hr' ? hrPage() : employeePage(employee)}<p class="footnote">Модельная дата: ${date(data.asOf)} 2026 · HackAlem AI</p></div></main></div>`;
+      <div class="content">${view === 'import' ? importer.page() : view === 'workshop' ? workshop.hrPage() : view === 'hr' ? hrPage() : employeePage(employee)}<p class="footnote">Модельная дата: ${date(data.asOf)} 2026 · HackAlem AI</p></div></main></div>`;
 }
 
 function openDialog(content) {
@@ -219,6 +222,7 @@ function action(event) {
   const button = event.target.closest('[data-action]');
   if (!button) return;
   const actionName = button.dataset.action;
+  if (importer.action(actionName)) return;
   if (workshop.action(actionName, button)) return;
   if (actionName === 'ai') { void requestAi(); return; }
   if (actionName === 'compare') return compareDialog();
@@ -237,17 +241,18 @@ function action(event) {
   }
   if (actionName === 'reset') { model.reset(); workshop.reset(); aiClient.reset(); aiMode = false; dialog.close(); render(); toast('Изменения демо и сохранённые черновики сброшены.'); return; }
   if (actionName === 'person') { employeeId = button.dataset.person; view = 'employee'; }
-  else view = ['hr', 'workshop'].includes(actionName) ? actionName : 'employee';
+  else view = ['hr', 'workshop', 'import'].includes(actionName) ? actionName : 'employee';
   render(); window.scrollTo({ top: 0, behavior: 'instant' });
 }
 
 app.addEventListener('click', action);
 dialog.addEventListener('click', action);
 app.addEventListener('change', event => {
+  if (importer.change(event)) return;
   if (workshop.change(event)) return;
   if (event.target.id === 'employee-picker') { employeeId = event.target.value; render(); document.querySelector('#employee-picker')?.focus(); refreshAiAfterChange(); }
 });
-app.addEventListener('submit', event => { void workshop.submit(event); });
+app.addEventListener('submit', event => { if (event.target.id === 'import-form') void importer.submit(event); else void workshop.submit(event); });
 dialog.addEventListener('submit', event => {
   if (event.target.id !== 'goal-form') return;
   event.preventDefault();
@@ -257,17 +262,28 @@ dialog.addEventListener('submit', event => {
   }
 });
 
-try {
-  const response = await fetch('./data.json');
-  if (!response.ok) throw new Error('Нет локального файла данных');
-  data = await response.json();
+function loadDataset(snapshot) {
+  workshop?.dispose(); aiClient.reset(); aiMode = false;
+  data = snapshot.data; datasetInfo = snapshot;
   if (!data.employees?.length || !data.events?.length) throw new Error('Неполный набор данных');
   let storage;
   try { storage = window.localStorage; } catch { /* Optional local persistence. */ }
   progress = restoreProgress(data, storage);
   model = progress.model;
+  if (!data.employees.some(p => p.employee_id === employeeId)) employeeId = data.employees[0].employee_id;
   workshop = createWorkshop({ data, getModel: () => model, getEmployee: () => data.employees.find(p => p.employee_id === employeeId),
-    rerender: render, toast, saved: progress, persist, eventTitle: title });
+    rerender: render, toast, saved: progress, persist, eventTitle: title, getVersion: () => datasetInfo.version });
+  if (dialog.open) dialog.close();
+}
+
+try {
+  const response = await fetch('/api/dataset');
+  if (response.ok) loadDataset(await response.json());
+  else {
+    const fallback = await fetch('./data.json');
+    if (!fallback.ok) throw new Error('Нет локального файла данных');
+    loadDataset({ data: await fallback.json(), canUndo: false, imported: false });
+  }
   render();
   fetch('/api/ai/status').then(response => {
     if (!response.ok) throw new Error('unavailable');

@@ -1,0 +1,13 @@
+{
+  "employees": [
+    {
+      "employee_id": "JURY_DEMO_1",
+      "full_name": "Учебный профиль жюри",
+      "role": "Backend Engineer",
+      "grade": "Junior",
+      "career_goal": { "target_role": "Backend Engineer", "target_grade": "Middle" },
+      "skills": { "SK_PYTHON": 2, "SK_SQL": 1, "SK_SYSTEM_DESIGN": 1, "SK_COMMUNICATION": 2 },
+      "last_review_date": "2026-10-01"
+    }
+  ]
+}

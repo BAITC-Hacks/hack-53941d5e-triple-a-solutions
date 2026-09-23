@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { buildContext, InputError } from './recommender.mjs';
 import { buildDevelopmentPaths, planOptions, activityContext, baselineActivityDraft } from '../../src/prototype/development.mjs';
+import { modelFromProgress } from '../../src/prototype/state.mjs';
 
 const PLAN_PROMPT = readFileSync(new URL('./plan-prompt.txt', import.meta.url), 'utf8');
 const HR_PROMPT = readFileSync(new URL('./hr-prompt.txt', import.meta.url), 'utf8');
@@ -49,8 +50,9 @@ export function validateHrAnswer(answer, ctx) {
     agenda: answer.agenda.map(({ title, minutes, exercise, assessment, skill_ids }) => ({ title, minutes, exercise, assessment, skill_ids })) };
 }
 
-export function createWorkflows({ data, provider }) {
+export function createWorkflows({ data: source, provider }) {
   async function developmentPlan(request) {
+    const data = typeof source === 'function' ? source() : source;
     const ctx = buildContext(data, request);
     let options, paths;
     try { options = planOptions(request.options); paths = buildDevelopmentPaths(data, ctx.state, options); }
@@ -70,9 +72,10 @@ export function createWorkflows({ data, provider }) {
   }
 
   async function improveActivity(request) {
+    const data = typeof source === 'function' ? source() : source;
     if (!request || typeof request.brief !== 'string' || request.brief.length > 1200) throw new InputError('Пожелание HR должно быть текстом до 1200 символов.');
     let ctx;
-    try { ctx = activityContext(data, request.eventId); } catch (error) { throw new InputError(error.message); }
+    try { ctx = activityContext(data, request.eventId, modelFromProgress(data, request.progress)); } catch (error) { throw new InputError(error.message); }
     const skillItem = ctx.skills.length ? { type: 'string', enum: ctx.skills.map(s => s.id) } : { type: 'string' };
     const ids = list(skillItem, 0, ctx.skills.length);
     const schema = object({ title: text(160), summary: text(800), pilot: text(1000),

@@ -57,7 +57,7 @@ export function createModel(data, initialCompletions = new Map()) {
     };
   }
 
-  function recommend(employee) {
+  function available(employee) {
     const state = snapshot(employee);
     const candidates = [];
     for (const event of data.events) {
@@ -74,7 +74,11 @@ export function createModel(data, initialCompletions = new Map()) {
         const reduction = Math.min(skill.required, after) - Math.min(skill.required, skill.level);
         return reduction > 0 ? [{ ...skill, after, reduction }] : [];
       });
-      if (!impact.length) continue;
+      const skillGains = event.develops_skills.flatMap(gain => {
+        const level = state.levels[gain.skill_id] || 0, after = applyGain(level, gain.gain, gain.max_level);
+        return after > level ? [{ id: gain.skill_id, name: skillMap.get(gain.skill_id)?.name || gain.skill_id, level, after }] : [];
+      });
+      if (!skillGains.length) continue;
       const relatedHistory = state.history.filter(row => {
         const historicalEvent = eventMap.get(row.event_id);
         return historicalEvent && historicalEvent.type === event.type && historicalEvent.format === event.format && !historicalEvent.mandatory;
@@ -86,14 +90,16 @@ export function createModel(data, initialCompletions = new Map()) {
       const weighted = impact.reduce((sum, item) => sum + item.reduction * (item.critical ? 3 : 1), 0);
       const score = weighted * 10 + weighted / Math.max(1, event.duration_hours) * 4
         + Math.min(successes, 3) - Math.min(setbacks, 3) * 2 + (ongoing ? 2 : 0);
-      candidates.push({ event, impact, session, successes, setbacks, ongoing, score });
+      candidates.push({ event, impact, skillGains, session, successes, setbacks, ongoing, score });
     }
     return candidates.sort((a, b) => b.score - a.score || a.event.event_id.localeCompare(b.event.event_id));
   }
 
+  function recommend(employee) { return available(employee).filter(item => item.impact.length); }
+
   function complete(employeeId, eventId) {
     const employee = data.employees.find(row => row.employee_id === employeeId);
-    if (!employee || !recommend(employee).some(item => item.event.event_id === eventId)) return false;
+    if (!employee || !available(employee).some(item => item.event.event_id === eventId)) return false;
     if (!simulated.has(employeeId)) simulated.set(employeeId, new Set());
     simulated.get(employeeId).add(eventId);
     return true;
@@ -121,7 +127,16 @@ export function createModel(data, initialCompletions = new Map()) {
     };
   }
 
-  return { snapshot, recommend, complete, setGoal, overview, eventMap, skillMap,
+  function progress() {
+    return [...new Set([...goals.keys(), ...simulated.keys()])].sort().map(employeeId => {
+      const base = data.employees.find(e => e.employee_id === employeeId)?.career_goal, selected = goals.get(employeeId);
+      const changed = selected && (selected.target_role !== base?.target_role || selected.target_grade !== base?.target_grade);
+      return { employeeId, goal: changed ? { role: selected.target_role, grade: selected.target_grade } : null,
+        simulated: [...(simulated.get(employeeId) || [])] };
+    }).filter(row => row.goal || row.simulated.length);
+  }
+
+  return { snapshot, available, recommend, complete, setGoal, overview, eventMap, skillMap, progress,
     reset() { simulated.clear(); goals.clear(); },
   };
 }

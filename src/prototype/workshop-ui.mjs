@@ -9,7 +9,7 @@ const textField = (label, name, value, max = 800) => `<label class="form-field">
 
 async function post(path, input, signal) {
   const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), signal });
-  if (!response.ok) throw new Error('unavailable');
+  if (!response.ok) { const error = new Error('unavailable'); error.status = response.status; throw error; }
   const result = await response.json();
   if (!['ai', 'rules'].includes(result.source)) throw new Error('invalid');
   return result;
@@ -47,14 +47,12 @@ function usableDraft(result, context) {
   } catch { return false; }
 }
 
-export function createWorkshop({ data, getModel, getEmployee, rerender, toast, saved, persist, eventTitle }) {
+export function createWorkshop({ data, getModel, getEmployee, rerender, toast, saved, persist, eventTitle, getVersion = () => undefined }) {
   const plans = {}, drafts = {}, settings = {}, pending = new Set(), controllers = new Set();
   let generation = 0, eventId = data.events.find(e => !e.mandatory).event_id;
-  const briefs = {}, contexts = new Map();
-  const context = id => {
-    if (!contexts.has(id)) contexts.set(id, activityContext(data, id));
-    return contexts.get(id);
-  };
+  const briefs = {};
+  const context = id => activityContext(data, id, getModel());
+  const dispose = () => { generation++; controllers.forEach(c => c.abort()); controllers.clear(); pending.clear(); };
   for (const employee of data.employees) {
     const result = saved.plans[employee.employee_id];
     if (result) {
@@ -100,8 +98,8 @@ export function createWorkshop({ data, getModel, getEmployee, rerender, toast, s
       <label class="form-field">Что хочется улучшить?<textarea name="brief" rows="3" maxlength="1200" placeholder="Например: добавить практику по рабочим кейсам и понятные критерии оценки">${escape(briefs[eventId] || '')}</textarea></label>
       <button class="button" ${busy ? 'disabled' : ''}>${busy ? 'Готовим предложения…' : result ? 'Создать новый черновик' : 'Предложить улучшения'}</button><p class="footnote">Без ключа доступен шаблон по правилам. После подключения AI учтёт ваше пожелание. Повторная генерация заменит локальный черновик этой активности.</p></form></section>
       ${d ? `<section class="panel hr-draft"><div class="section-head"><h2>Предложения к программе</h2><span class="tag">${sourceName(result.source)}${result.edited ? ' · изменён HR' : ''}</span></div><p role="status">${escape(result.message)}</p>
-      <form id="hr-draft-form"><label class="form-field">Название<input name="title" maxlength="160" required value="${escape(d.title)}"></label>${textField('Зачем меняем программу', 'summary', d.summary)}
-      <h3>Что добавить и как проверить пользу</h3>${d.improvements.map((row, i) => `<fieldset class="draft-block"><legend>${i + 1}. ${escape(row.title)}</legend>${textField('Изменение', `action-${i}`, row.action)}${textField('Как измерить результат', `check-${i}`, row.success_check, 600)}<details class="evidence"><summary>Основание предложения</summary><ul>${row.evidence_ids.map(id => `<li>${escape(ctx.evidence.find(f => f.id === id)?.text)}</li>`).join('')}</ul></details></fieldset>`).join('')}
+      ${result.contextKey !== JSON.stringify(getModel().progress()) ? '<div class="notice">Цели или демо-прогресс изменились. Создайте новый черновик; ниже сохранены предложения на момент прошлого расчёта.</div>' : ''}<form id="hr-draft-form"><label class="form-field">Название<input name="title" maxlength="160" required value="${escape(d.title)}"></label>${textField('Зачем меняем программу', 'summary', d.summary)}
+      <h3>Что добавить и как проверить пользу</h3>${d.improvements.map((row, i) => `<fieldset class="draft-block"><legend>${i + 1}. ${escape(row.title)}</legend>${textField('Изменение', `action-${i}`, row.action)}${textField('Как измерить результат', `check-${i}`, row.success_check, 600)}<details class="evidence"><summary>Основание предложения</summary><ul>${row.evidence_ids.map(id => `<li>${escape((result.evidence || ctx.evidence).find(f => f.id === id)?.text)}</li>`).join('')}</ul></details></fieldset>`).join('')}
       <h3>Обновлённая программа · бюджет ${ctx.event.duration_hours} ч</h3>${d.agenda.map((row, i) => `<fieldset class="draft-block"><legend>${i + 1}. ${escape(row.title)}</legend><label class="form-field">Длительность, минут<input type="number" name="minutes-${i}" min="1" max="${ctx.event.duration_hours * 60}" required value="${row.minutes}"></label>${textField('Практическое задание', `exercise-${i}`, row.exercise, 600)}${textField('Обратная связь и оценка', `assessment-${i}`, row.assessment, 600)}</fieldset>`).join('')}
       ${textField('План пилота', 'pilot', d.pilot, 1000)}<p class="notice">Эффективность предложений ещё не доказана. Сначала проведите пилот. Сохранение черновика не меняет каталог и числовой прирост навыков сотрудников.</p>
       <div class="draft-actions"><button class="button" type="submit">Сохранить черновик</button><button class="button secondary" type="button" data-action="draft-download">Скачать для команды</button><span id="draft-save-status" role="status"></span></div>
@@ -137,8 +135,8 @@ export function createWorkshop({ data, getModel, getEmployee, rerender, toast, s
   }
 
   return {
-    journey, hrPage,
-    reset() { generation++; controllers.forEach(c => c.abort()); controllers.clear(); pending.clear(); for (const map of [plans, drafts, settings, briefs]) for (const k of Object.keys(map)) delete map[k]; save(); },
+    journey, hrPage, dispose,
+    reset() { dispose(); for (const map of [plans, drafts, settings, briefs]) for (const k of Object.keys(map)) delete map[k]; save(); },
     change(event) {
       if (event.target.id === 'activity-picker') { eventId = event.target.value; rerender(); return true; }
       if (event.target.closest('#plan-form')) { const f = new FormData(event.target.closest('form')); settings[getEmployee().employee_id] = { focusSkill: f.get('focusSkill'), weeklyHours: Number(f.get('weeklyHours')), maxSteps: Number(f.get('maxSteps')) }; }
@@ -157,8 +155,9 @@ export function createWorkshop({ data, getModel, getEmployee, rerender, toast, s
         settings[id] = options;
         await run(`plan:${id}`, async (signal, current) => {
           let result;
-          try { result = await post('/api/development-plan', { ...input, options }, signal); }
-          catch {
+          try { result = await post('/api/development-plan', { ...input, options, datasetVersion: getVersion() }, signal); }
+          catch (error) {
+            if (error.status === 409) { toast('Набор данных изменился. Обновите страницу.'); return; }
             const plan = buildDevelopmentPaths(data, state, options)[0] || null;
             result = { source: 'rules', plan, message: plan ? 'Сервис AI недоступен. Маршрут рассчитан по правилам в браузере.' : 'Для выбранных условий нет доступного маршрута. Попробуйте другой фокус.' };
           }
@@ -168,13 +167,19 @@ export function createWorkshop({ data, getModel, getEmployee, rerender, toast, s
           plans[id] = result; save();
         });
       } else {
-        const id = eventId, brief = String(fields.get('brief'));
+        const id = eventId, brief = String(fields.get('brief')), currentProgress = getModel().progress(), ctx = context(id);
+        const contextKey = JSON.stringify(currentProgress);
         briefs[id] = brief;
         await run(`hr:${id}`, async (signal, current) => {
           let result;
-          try { result = await post('/api/hr/improve-activity', { eventId: id, brief }, signal); }
-          catch { result = { source: 'rules', eventId: id, draft: baselineActivityDraft(context(id)), message: 'Сервис AI недоступен. Показан черновик по правилам.' }; }
-          if (current() && usableDraft(result, context(id))) { drafts[id] = result; save(); }
+          try { result = await post('/api/hr/improve-activity', { eventId: id, brief, progress: currentProgress, datasetVersion: getVersion() }, signal); }
+          catch (error) {
+            if (error.status === 409) { toast('Набор данных изменился. Обновите страницу.'); return; }
+            result = { source: 'rules', eventId: id, draft: baselineActivityDraft(ctx), evidence: ctx.evidence, stats: ctx.stats, message: 'Сервис AI недоступен. Показан черновик по правилам.' };
+          }
+          if (!current()) return;
+          if (contextKey !== JSON.stringify(getModel().progress())) { toast('Демо-прогресс изменился. Создайте черновик заново.'); return; }
+          if (usableDraft(result, ctx)) { drafts[id] = { ...result, contextKey }; save(); }
         });
       }
     },
