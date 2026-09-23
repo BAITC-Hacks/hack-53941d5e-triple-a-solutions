@@ -5,12 +5,15 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Store, ApiError, fail, fingerprint } from './store.mjs';
 import { CareerService } from './service.mjs';
+import { workflowService } from './workflows.mjs';
+import { createStructuredProvider, readConfig } from '../../scripts/ai/provider.mjs';
 import { readJson, loadDataset, validateDataset } from './validate.mjs';
 import { createModel } from '../prototype/model.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const publicFiles = new Map([
+  ...['ai-client.mjs', 'development.mjs', 'workshop-ui.mjs'].map(file => ['/' + file, [file, 'text/javascript']]),
   ['/', ['index.html', 'text/html']], ['/index.html', ['index.html', 'text/html']],
   ['/app.mjs', ['app.mjs', 'text/javascript']], ['/model.mjs', ['model.mjs', 'text/javascript']],
   ['/api-client.mjs', ['api-client.mjs', 'text/javascript']], ['/style.css', ['style.css', 'text/css']],
@@ -24,7 +27,7 @@ async function body(req) {
 }
 function fields(value, allowed) { if (Object.keys(value).some(k => !allowed.includes(k))) fail(422, 'UNKNOWN_FIELD', 'В запросе есть неподдерживаемые поля'); }
 
-export function buildServer({ dbPath = ':memory:', dataset, rules, asOf, employeeId = 'E0066', employeeToken, hrToken } = {}) {
+export function buildServer({ dbPath = ':memory:', dataset, rules, asOf, employeeId = 'E0066', employeeToken, hrToken, aiProvider = createStructuredProvider({ config: readConfig(process.env) }) } = {}) {
   if (!employeeToken || !hrToken || employeeToken === hrToken) throw new Error('Distinct employee and HR tokens required');
   const store = new Store(dbPath, dataset, rules);
   let service = new CareerService(store, asOf);
@@ -76,6 +79,18 @@ export function buildServer({ dbPath = ':memory:', dataset, rules, asOf, employe
         return send(res, 200, { asOf: service.asOf, user: { role: user.role, employeeId: user.employeeId }, employees: [profile.employee],
           skills: service.data.skills, roleProfiles: service.data.roleProfiles, events: service.data.events, demoRules: service.rules, policyVersion: store.version });
       }
+      if (path === '/api/ai/status' && req.method === 'GET') return send(res, 200, aiProvider.status());
+      if (path === '/api/hr/activity-contexts' && req.method === 'GET') return send(res, 200, workflowService(service, aiProvider).contexts());
+      if (['/api/recommendations', '/api/development-plan', '/api/hr/improve-activity'].includes(path) && req.method === 'POST') {
+        const input = await body(req), workflows = workflowService(service, aiProvider);
+        if (path === '/api/hr/improve-activity') {
+          fields(input, ['eventId', 'brief']);
+          return send(res, 200, await workflows.improveActivity(input));
+        }
+        fields(input, ['employeeId', 'revision', ...(path === '/api/development-plan' ? ['options'] : [])]);
+        if (input.employeeId !== user.employeeId) fail(403, 'PROFILE_FORBIDDEN', 'Чужие профили доступны только через HR-функции');
+        return send(res, 200, await (path === '/api/recommendations' ? workflows.recommendations(user.employeeId) : workflows.developmentPlan(user.employeeId, input.options)));
+      }
       if (path === '/api/hr/overview' && req.method === 'GET') return send(res, 200, service.overview());
       const hrProfile = /^\/api\/hr\/employees\/([A-Za-z0-9_-]+)$/.exec(path);
       if (hrProfile && req.method === 'GET') return send(res, 200, service.profile(hrProfile[1]));
@@ -121,14 +136,14 @@ export function buildServer({ dbPath = ':memory:', dataset, rules, asOf, employe
       fail(405, 'METHOD_NOT_ALLOWED', 'Метод не поддерживается');
     } catch (error) {
       if (!(error instanceof ApiError)) console.error('Request failed:', error.message);
-      if (!res.headersSent) send(res, error.status || 500, { error: { code: error.code || 'INTERNAL_ERROR', message: error.status ? error.message : 'Внутренняя ошибка сервера', details: error.details } });
+      if (!res.headersSent) send(res, error.status || (error.constructor.name === 'InputError' ? 400 : 500), { error: { code: error.code || 'INTERNAL_ERROR', message: error.status ? error.message : 'Внутренняя ошибка сервера', details: error.details } });
       else res.end();
     }
   });
   return { server, store, get service() { return service; } };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+export function startBackend() {
   const local = resolve(ROOT, '.local'); mkdirSync(local, { recursive: true });
   const accessPath = resolve(local, 'access.json');
   if (!existsSync(accessPath)) writeFileSync(accessPath, JSON.stringify({ employeeToken: randomBytes(32).toString('hex'), hrToken: randomBytes(32).toString('hex') }, null, 2), { mode: 0o600 });
@@ -143,3 +158,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const stop = () => app.server.close(() => { app.store.close(); process.exit(0); });
   process.on('SIGINT', stop); process.on('SIGTERM', stop);
 }
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) startBackend();

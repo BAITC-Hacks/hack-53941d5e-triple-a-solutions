@@ -26,7 +26,7 @@ export async function connectBackend(root) {
     data = await request('/api/bootstrap');
   }
   const profiles = new Map(), catalog = new Map(), recommendations = new Map();
-  let overview;
+  let overview, activityContexts = [];
   const id = data.user.employeeId;
   async function refresh() {
     const [profile, recs, events] = await Promise.all([
@@ -45,6 +45,8 @@ export async function connectBackend(root) {
     programProgress: (employee, eventId) => catalog.get(employee.employee_id)?.find(c => c.event.event_id === eventId)?.program,
     catalog: () => catalog.get(id) || [],
     overview: () => overview,
+    activityContext: id => activityContexts.find(c => c.event.event_id === id),
+    async loadWorkshop() { activityContexts = await request('/api/hr/activity-contexts'); },
     async loadHr() {
       overview = await request('/api/hr/overview');
       for (const state of overview.states) profiles.set(state.employee.employee_id, state);

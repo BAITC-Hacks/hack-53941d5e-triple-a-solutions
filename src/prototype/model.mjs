@@ -5,6 +5,11 @@ export function applyGain(level, gain, ceiling) {
 }
 
 export function createModel(data, demoRules = {}) {
+  // Preserve the original demo API for the teammate's pure planning tools.
+  // Passing an explicit rules object uses session/points records; backend always does so.
+  const legacy = arguments.length < 2 || demoRules instanceof Map;
+  const initial = demoRules instanceof Map ? demoRules : new Map();
+  if (demoRules instanceof Map) demoRules = {};
   const eventMap = new Map(data.events.map(event => [event.event_id, event]));
   const skillMap = new Map(data.skills.map(skill => [skill.skill_id, skill]));
   const employeeMap = new Map(data.employees.map(employee => [employee.employee_id, employee]));
@@ -16,7 +21,9 @@ export function createModel(data, demoRules = {}) {
   }
   for (const rows of historyMap.values()) rows.sort((a, b) => a.date.localeCompare(b.date) || a.record_id.localeCompare(b.record_id));
 
-  const demoCompletions = new Map();
+  const demoCompletions = new Map([...initial].map(([id, events]) => [id, [...new Set(events)].map((eventId, i) => ({
+    id: `projection:${id}:${i}`, eventId, date: data.asOf, action: eventMap.get(eventId)?.title || eventId, points: 0,
+  }))]));
   const goals = new Map();
   const repeatable = new Set(demoRules.repeatableEventIds || []);
   const sessionPrograms = demoRules.sessionPrograms || {};
@@ -122,7 +129,7 @@ export function createModel(data, demoRules = {}) {
     return {
       employee, levels, history, done, goal, requirements, totalRequired: total, covered,
       coverage: total ? Math.round(covered / total * 100) : 100,
-      gaps: requirements.filter(skill => skill.gap > 0), simulated,
+      gaps: requirements.filter(skill => skill.gap > 0), simulated: legacy ? simulated.map(row => row.eventId) : simulated,
       pointLedger: ledger, totalPoints: ledger.reduce((sum, row) => sum + row.points, 0),
     };
   }
@@ -209,7 +216,7 @@ export function createModel(data, demoRules = {}) {
     if (!repeatable.has(eventId) && records.some(row => row.eventId === eventId)) return false;
     const occurrence = records.filter(row => row.eventId === eventId).length;
     records.push({ id: `demo:${employeeId}:${eventId}:${occurrence}`, eventId, date: data.asOf, action: event.title, points: pointsFor(event) });
-    return { kind: 'activity', points: pointsFor(event), finished: true };
+    return legacy ? true : { kind: 'activity', points: pointsFor(event), finished: true };
   }
 
   function setGoal(employeeId, role, grade) {

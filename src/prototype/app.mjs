@@ -1,5 +1,9 @@
 import { applyGain, createModel, GRADES } from './model.mjs';
 import { connectBackend } from './api-client.mjs';
+import { createWorkshop } from './workshop-ui.mjs';
+import { createAiClient } from './ai-client.mjs';
+const ai = createAiClient();
+let workshop;
 
 const app = document.querySelector('#app');
 const dialog = document.querySelector('#details');
@@ -101,6 +105,12 @@ function missedBanner(miss) {
 }
 
 function employeePage(employee) {
+  const state = model.snapshot(employee), info = ai.get(state);
+  return employeeBasePage(employee) + `<section class="panel"><h2>Объяснение рекомендаций</h2><p>Состав и порядок определяет код. AI поясняет только рассчитанные факты.</p><button class="button secondary" data-action="ai-explain" ${info.status === 'loading' ? 'disabled' : ''}>${info.status === 'loading' ? 'Готовим объяснение…' : 'Объяснить рекомендации'}</button>
+    ${info.result ? `<p role="status">${escape(info.result.message)}</p>${info.result.recommendations.map(row => `<div class="reason-block"><h3>${escape(title(model.eventMap.get(row.event_id)))}</h3><p>${escape(row.reason || model.recommend(employee).find(r => r.event.event_id === row.event_id)?.explanation || 'Подобрано по требованиям цели и доступному приросту навыков.')}</p></div>`).join('')}` : ''}</section>` + (workshop?.journey(state) || '');
+}
+
+function employeeBasePage(employee) {
   const state = model.snapshot(employee);
   const recommendations = model.recommend(employee).map(item => ({ ...item, coverage: state.coverage }));
   const programRecommendation = recommendations.find(item => item.event.event_id === 'EV_019');
@@ -157,12 +167,12 @@ function render() {
   employeeId = employee.employee_id;
   app.innerHTML = `<div class="shell"><aside class="sidebar"><div><div class="brand"><span class="brand-mark">${icon('chart', 23)}</span>Career Quest</div><div class="workspace">ПРОСТРАНСТВО РАЗВИТИЯ</div></div>
     <nav aria-label="Основные разделы"><p class="nav-label">Рабочее пространство</p><button class="nav-button ${view === 'employee' ? 'active' : ''}" ${view === 'employee' ? 'aria-current="page"' : ''} data-action="employee">${icon('road')}Мой рост</button>
-      ${!model.isBackend || data.user.role === 'hr' ? `<button class="nav-button ${view === 'hr' ? 'active' : ''}" ${view === 'hr' ? 'aria-current="page"' : ''} data-action="hr">${icon('team')}Обзор HR</button>` : ''}</nav>
+      ${!model.isBackend || data.user.role === 'hr' ? `<button class="nav-button ${view === 'hr' ? 'active' : ''}" ${view === 'hr' ? 'aria-current="page"' : ''} data-action="hr">${icon('team')}Обзор HR</button>` : ''}${!model.isBackend || data.user.role === 'hr' ? `<button class="nav-button ${view === 'workshop' ? 'active' : ''}" data-action="workshop">${icon('team')}Мастерская HR</button>` : ''}</nav>
     <div class="sidebar-note"><strong>Демо правил</strong>Навыки и требования взяты из набора Career Quest. Пойнты и шаги внутри API Testing помечены как временные правила.</div>
     <div class="sidebar-bottom"><span class="avatar">${view === 'hr' ? 'HR' : escape(initials(employee.full_name))}</span><div>${view === 'hr' ? 'Режим HR' : escape(employee.full_name.split(' ')[0])}<small>${view === 'hr' ? 'Доступ к аналитике' : employee.grade + ' · личный кабинет'}</small></div></div></aside>
-    <main class="main"><header class="topbar"><div class="breadcrumb"><span>Рабочее пространство /</span><strong>${view === 'hr' ? 'Обзор HR' : 'Мой рост'}</strong></div>
+    <main class="main"><header class="topbar"><div class="breadcrumb"><span>Рабочее пространство /</span><strong>${view === 'workshop' ? 'Мастерская HR' : view === 'hr' ? 'Обзор HR' : 'Мой рост'}</strong></div>
       <div class="top-actions"><span class="prototype-badge">Черновой прототип</span><button class="button secondary" data-action="reset">${model.isBackend ? 'Обновить данные' : 'Сбросить демо'}</button>${model.isBackend ? '<button class="button secondary" data-action="logout">Выйти</button>' : ''}</div></header>
-      <div class="content">${view === 'hr' ? hrPage() : employeePage(employee)}<p class="footnote">Модельная дата: ${date(data.asOf)} · HackAlem AI</p></div></main></div>`;
+      <div class="content">${view === 'workshop' ? workshop.hrPage() : view === 'hr' ? hrPage() : employeePage(employee)}<p class="footnote">Модельная дата: ${date(data.asOf)} · HackAlem AI</p></div></main></div>`;
 }
 
 function openDialog(content) { dialog.innerHTML = content; if (!dialog.open) dialog.showModal(); }
@@ -203,6 +213,9 @@ async function action(event) {
   const button = event.target.closest('[data-action]');
   if (!button) return;
   const actionName = button.dataset.action;
+  if (await workshop?.action(actionName, button)) return;
+  if (actionName === 'ai-explain') { const employee = data.employees.find(e => e.employee_id === employeeId); const task = ai.request(model.snapshot(employee)); render(); await task; render(); return; }
+  if (actionName === 'workshop') { if (model.isBackend) await model.loadWorkshop(); view = 'workshop'; render(); return; }
   if (actionName === 'close') return dialog.close();
   if (actionName === 'details') return showDetails(button.dataset.event);
   if (actionName === 'hr-person') return showHrPerson(button.dataset.person);
@@ -220,12 +233,13 @@ async function action(event) {
     try { result = await model.complete(employeeId, button.dataset.event, button.dataset.session); }
     finally { button.disabled = false; }
     if (result) {
+      ai.reset();
       dialog.close(); render();
       toast(result.kind === 'session' ? `Сессия ${result.completed} из ${result.total} завершена: +${result.points} пойнт${result.finished ? '. Навык и карьерный прогресс обновлены.' : '. Навык вырастет после всей программы.'}` : `Активность завершена: +${result.points} пойнта. Навыки и цель пересчитаны.`);
     } else toast('Этот шаг уже завершён или сейчас недоступен. Повторного начисления нет.');
     return;
   }
-  if (actionName === 'reset') { await model.reset(); if (view === 'hr' && model.isBackend) await model.loadHr(); dialog.close(); render(); toast(model.isBackend ? 'Данные обновлены.' : 'Демо-действия сброшены.'); return; }
+  if (actionName === 'reset') { ai.reset(); workshop?.reset(); await model.reset(); if (view === 'hr' && model.isBackend) await model.loadHr(); if (view === 'workshop' && model.isBackend) await model.loadWorkshop(); dialog.close(); render(); toast(model.isBackend ? 'Данные обновлены.' : 'Демо-действия сброшены.'); return; }
   if (actionName === 'hr' && model.isBackend) await model.loadHr();
   view = actionName === 'hr' ? 'hr' : 'employee';
   render(); window.scrollTo({ top: 0, behavior: 'instant' });
@@ -233,6 +247,9 @@ async function action(event) {
 
 const onAction = event => action(event).catch(error => toast(error.message));
 app.addEventListener('click', onAction);
+app.addEventListener('submit', event => workshop?.submit(event).catch(error => toast(error.message)));
+app.addEventListener('change', event => workshop?.change(event));
+app.addEventListener('input', event => workshop?.change(event));
 dialog.addEventListener('click', onAction);
 dialog.addEventListener('submit', async event => {
   if (event.target.id !== 'goal-form') return;
@@ -241,7 +258,7 @@ dialog.addEventListener('submit', async event => {
   button.disabled = true;
   try {
     if (await model.setGoal(employeeId, form.get('role'), form.get('grade'))) {
-      dialog.close(); render(); toast('Цель сохранена. Рекомендации пересчитаны.');
+      ai.reset(); dialog.close(); render(); toast('Цель сохранена. Рекомендации пересчитаны.');
     }
   } catch (error) { toast(error.message); }
   finally { button.disabled = false; }
@@ -271,6 +288,7 @@ try {
   if (demoRules.meta?.kind !== 'demo-only') throw new Error('Файл временных правил не помечен как demo-only');
   model = createModel(data, demoRules);
   }
+  workshop = createWorkshop({ data, getModel: () => model, getEmployee: () => data.employees.find(e => e.employee_id === employeeId), rerender: render, toast, saved: { plans: {}, drafts: {} }, persist: () => true, eventTitle: title });
   render();
 } catch (error) {
   app.innerHTML = `<main class="loading"><h1>Не удалось открыть данные</h1><p>Проверьте запуск сервера и обновите страницу.</p><p>${escape(error.message)}</p><a class="button" href="/">Повторить</a></main>`;
