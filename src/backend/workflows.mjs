@@ -22,9 +22,10 @@ export function workflowService(service, provider = createStructuredProvider({ c
       const ctx = context(id), current = ctx.state;
       // Projection starts at persisted levels, never replays gains from old history.
       const person = employees.find(e => e.employee_id === id);
+      const catalog = new Map(service.catalog(id).map(c => [c.event.event_id, c]));
       const subset = { ...data, employees: [person], history: history.filter(h => h.employee_id === id),
         events: data.events.filter(e => !current.done.includes(e.event_id)).map(event => {
-          const program = service.catalog(id).find(c => c.event.event_id === event.event_id)?.program;
+          const program = catalog.get(event.event_id)?.program;
           return program ? { ...event, upcoming_sessions: program.sessions.filter(s => !s.completed).map(s => s.date) } : event;
         }) };
       const projected = { ...current, employee: person, simulated: [] };

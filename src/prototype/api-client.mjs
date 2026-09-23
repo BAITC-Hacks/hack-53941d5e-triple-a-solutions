@@ -37,6 +37,7 @@ export async function connectBackend(root) {
   }
   const model = {
     isBackend: true,
+    loadDataset: () => request('/api/dataset'),
     eventMap: new Map(data.events.map(e => [e.event_id, e])),
     skillMap: new Map(data.skills.map(s => [s.skill_id, s])), demoRules: data.demoRules,
     snapshot: employee => profiles.get(employee.employee_id),

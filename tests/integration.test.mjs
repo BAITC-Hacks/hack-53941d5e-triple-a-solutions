@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readJson } from '../src/backend/validate.mjs';
@@ -84,4 +87,40 @@ test('multi-session plans start at the first outstanding session and finish afte
   const step = result.plan.steps.find(s => s.event_id === 'EV_019');
   assert.ok(step); assert.equal(step.start, [...event.upcoming_sessions].sort()[0]);
   assert.ok(step.end >= [...event.upcoming_sessions].sort().at(-1));
+});
+
+test('HR preview/commit/undo share persistent SQLite and refuse to erase employee actions', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'cq-merged-import-'));
+  const options = { dataset, rules, employeeToken: 'test-employee', hrToken: 'test-hr', aiProvider: offline(), dbPath: join(directory, 'test.sqlite') };
+  let app = buildServer(options);
+  async function start() { await new Promise(r => app.server.listen(0, '127.0.0.1', r)); }
+  async function stop() { app.server.closeAllConnections(); await new Promise(r => app.server.close(r)); app.store.close(); }
+  await start(); t.after(async () => { await stop(); rmSync(directory, { recursive: true, force: true }); });
+  const request = async (path, input, token = 'test-hr') => {
+    const response = await fetch(`http://127.0.0.1:${app.server.address().port}${path}`, { method: input ? 'POST' : 'GET', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, ...(input ? { body: JSON.stringify(input) } : {}) });
+    return { status: response.status, body: await response.json() };
+  };
+  const profile = { ...dataset.employees[0], employee_id: 'SYNC_SYNTHETIC', full_name: 'Synthetic Import', manager_id: null };
+  const files = [{ kind: 'employees', text: JSON.stringify([profile]) }];
+  assert.equal((await request('/api/dataset', null, 'test-employee')).status, 403);
+  const initial = (await request('/api/dataset')).body;
+  assert.equal((await request('/api/import/preview', { version: initial.version, files }, 'test-employee')).status, 403);
+  const preview = (await request('/api/import/preview', { version: initial.version, files })).body;
+  assert.equal(preview.ok, true, JSON.stringify(preview.errors)); assert.ok(preview.token);
+  assert.equal(app.service.data.employees.length, dataset.employees.length);
+  const committed = await request('/api/import/commit', { version: preview.version, token: preview.token });
+  assert.equal(committed.status, 200); assert.equal(committed.body.data.employees.length, dataset.employees.length + 1);
+  assert.equal((await request('/api/hr/employees/SYNC_SYNTHETIC')).status, 200);
+  assert.equal((await request('/api/import/commit', { version: preview.version, token: preview.token })).status, 409);
+  assert.equal((await request('/api/development-plan', { employeeId: 'E0066', datasetVersion: initial.version }, 'test-employee')).status, 409);
+  await stop(); app = buildServer(options); await start();
+  assert.equal(app.service.data.employees.length, dataset.employees.length + 1);
+  const undone = await request('/api/import/undo', { version: committed.body.version });
+  assert.equal(undone.status, 200); assert.equal(undone.body.version, initial.version);
+  const again = (await request('/api/import/preview', { version: initial.version, files })).body;
+  const item = app.service.catalog('E0066').find(c => c.canComplete && !c.program);
+  app.service.complete('E0066', item.event.event_id, item.completionSessionId, 'protect-progress');
+  const before = app.service.profile('E0066');
+  assert.equal((await request('/api/import/commit', { version: again.version, token: again.token })).status, 409);
+  assert.deepEqual(app.service.profile('E0066'), before);
 });

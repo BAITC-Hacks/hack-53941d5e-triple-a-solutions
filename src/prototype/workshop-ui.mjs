@@ -47,14 +47,13 @@ function usableDraft(result, context) {
   } catch { return false; }
 }
 
-export function createWorkshop({ data, getModel, getEmployee, rerender, toast, saved, persist, eventTitle }) {
+export function createWorkshop({ data, getModel, getEmployee, rerender, toast, saved, persist, eventTitle, getVersion = () => undefined }) {
   const plans = {}, drafts = {}, settings = {}, pending = new Set(), controllers = new Set();
   let generation = 0, eventId = data.events.find(e => !e.mandatory).event_id;
-  const briefs = {}, contexts = new Map();
+  const briefs = {};
   const context = id => {
     if (getModel().isBackend) return getModel().activityContext(id);
-    if (!contexts.has(id)) contexts.set(id, activityContext(data, id));
-    return contexts.get(id);
+    return activityContext(data, id, getModel());
   };
   for (const employee of data.employees) {
     const result = saved.plans[employee.employee_id];
@@ -101,8 +100,8 @@ export function createWorkshop({ data, getModel, getEmployee, rerender, toast, s
       <label class="form-field">Что хочется улучшить?<textarea name="brief" rows="3" maxlength="1200" placeholder="Например: добавить практику по рабочим кейсам и понятные критерии оценки">${escape(briefs[eventId] || '')}</textarea></label>
       <button class="button" ${busy ? 'disabled' : ''}>${busy ? 'Готовим предложения…' : result ? 'Создать новый черновик' : 'Предложить улучшения'}</button><p class="footnote">Без ключа доступен шаблон по правилам. После подключения AI учтёт ваше пожелание. Повторная генерация заменит локальный черновик этой активности.</p></form></section>
       ${d ? `<section class="panel hr-draft"><div class="section-head"><h2>Предложения к программе</h2><span class="tag">${sourceName(result.source)}${result.edited ? ' · изменён HR' : ''}</span></div><p role="status">${escape(result.message)}</p>
-      <form id="hr-draft-form"><label class="form-field">Название<input name="title" maxlength="160" required value="${escape(d.title)}"></label>${textField('Зачем меняем программу', 'summary', d.summary)}
-      <h3>Что добавить и как проверить пользу</h3>${d.improvements.map((row, i) => `<fieldset class="draft-block"><legend>${i + 1}. ${escape(row.title)}</legend>${textField('Изменение', `action-${i}`, row.action)}${textField('Как измерить результат', `check-${i}`, row.success_check, 600)}<details class="evidence"><summary>Основание предложения</summary><ul>${row.evidence_ids.map(id => `<li>${escape(ctx.evidence.find(f => f.id === id)?.text)}</li>`).join('')}</ul></details></fieldset>`).join('')}
+      ${result.contextKey && result.contextKey !== JSON.stringify(ctx) ? '<p class="notice">Профили изменились. Создайте новый черновик; сохранённые основания относятся к прошлому расчёту.</p>' : ''}<form id="hr-draft-form"><label class="form-field">Название<input name="title" maxlength="160" required value="${escape(d.title)}"></label>${textField('Зачем меняем программу', 'summary', d.summary)}
+      <h3>Что добавить и как проверить пользу</h3>${d.improvements.map((row, i) => `<fieldset class="draft-block"><legend>${i + 1}. ${escape(row.title)}</legend>${textField('Изменение', `action-${i}`, row.action)}${textField('Как измерить результат', `check-${i}`, row.success_check, 600)}<details class="evidence"><summary>Основание предложения</summary><ul>${row.evidence_ids.map(id => `<li>${escape((result.evidence || ctx.evidence).find(f => f.id === id)?.text)}</li>`).join('')}</ul></details></fieldset>`).join('')}
       <h3>Обновлённая программа · бюджет ${ctx.event.duration_hours} ч</h3>${d.agenda.map((row, i) => `<fieldset class="draft-block"><legend>${i + 1}. ${escape(row.title)}</legend><label class="form-field">Длительность, минут<input type="number" name="minutes-${i}" min="1" max="${ctx.event.duration_hours * 60}" required value="${row.minutes}"></label>${textField('Практическое задание', `exercise-${i}`, row.exercise, 600)}${textField('Обратная связь и оценка', `assessment-${i}`, row.assessment, 600)}</fieldset>`).join('')}
       ${textField('План пилота', 'pilot', d.pilot, 1000)}<p class="notice">Эффективность предложений ещё не доказана. Сначала проведите пилот. Сохранение черновика не меняет каталог и числовой прирост навыков сотрудников.</p>
       <div class="draft-actions"><button class="button" type="submit">Сохранить черновик</button><button class="button secondary" type="button" data-action="draft-download">Скачать для команды</button><span id="draft-save-status" role="status"></span></div>
@@ -158,7 +157,7 @@ export function createWorkshop({ data, getModel, getEmployee, rerender, toast, s
         settings[id] = options;
         await run(`plan:${id}`, async (signal, current) => {
           let result;
-          try { result = await post('/api/development-plan', { ...input, options }, signal); }
+          try { result = await post('/api/development-plan', { ...input, options, datasetVersion: getVersion() }, signal); }
           catch (error) {
             if (getModel().isBackend) throw new Error('Не удалось получить план с сервера. Повторите запрос.');
             const plan = buildDevelopmentPaths(data, state, options)[0] || null;
@@ -174,9 +173,9 @@ export function createWorkshop({ data, getModel, getEmployee, rerender, toast, s
         briefs[id] = brief;
         await run(`hr:${id}`, async (signal, current) => {
           let result;
-          try { result = await post('/api/hr/improve-activity', { eventId: id, brief }, signal); }
+          try { result = await post('/api/hr/improve-activity', { eventId: id, brief, datasetVersion: getVersion() }, signal); }
           catch { if (getModel().isBackend) throw new Error('Не удалось получить HR-черновик с сервера.'); result = { source: 'rules', eventId: id, draft: baselineActivityDraft(context(id)), message: 'Сервис AI недоступен. Показан черновик по правилам.' }; }
-          if (current() && usableDraft(result, context(id))) { drafts[id] = result; save(); }
+          if (current() && usableDraft(result, context(id))) { drafts[id] = { ...result, contextKey: JSON.stringify(context(id)), evidence: result.evidence || context(id).evidence }; save(); }
         });
       }
     },

@@ -1,8 +1,11 @@
 import { applyGain, createModel, GRADES } from './model.mjs';
 import { connectBackend } from './api-client.mjs';
 import { createWorkshop } from './workshop-ui.mjs';
+import { createImportUi } from './import-ui.mjs';
 import { createAiClient } from './ai-client.mjs';
-const ai = createAiClient();
+const ai = createAiClient(fetch, () => data?.policyVersion);
+let datasetInfo;
+const importer = createImportUi({ getDataset: () => datasetInfo, applyDataset: () => location.reload(), rerender: render, toast });
 let workshop;
 
 const app = document.querySelector('#app');
@@ -167,12 +170,12 @@ function render() {
   employeeId = employee.employee_id;
   app.innerHTML = `<div class="shell"><aside class="sidebar"><div><div class="brand"><span class="brand-mark">${icon('chart', 23)}</span>Career Quest</div><div class="workspace">ПРОСТРАНСТВО РАЗВИТИЯ</div></div>
     <nav aria-label="Основные разделы"><p class="nav-label">Рабочее пространство</p><button class="nav-button ${view === 'employee' ? 'active' : ''}" ${view === 'employee' ? 'aria-current="page"' : ''} data-action="employee">${icon('road')}Мой рост</button>
-      ${!model.isBackend || data.user.role === 'hr' ? `<button class="nav-button ${view === 'hr' ? 'active' : ''}" ${view === 'hr' ? 'aria-current="page"' : ''} data-action="hr">${icon('team')}Обзор HR</button>` : ''}${!model.isBackend || data.user.role === 'hr' ? `<button class="nav-button ${view === 'workshop' ? 'active' : ''}" data-action="workshop">${icon('team')}Мастерская HR</button>` : ''}</nav>
+      ${!model.isBackend || data.user.role === 'hr' ? `<button class="nav-button ${view === 'hr' ? 'active' : ''}" ${view === 'hr' ? 'aria-current="page"' : ''} data-action="hr">${icon('team')}Обзор HR</button>` : ''}${!model.isBackend || data.user.role === 'hr' ? `<button class="nav-button ${view === 'workshop' ? 'active' : ''}" data-action="workshop">${icon('team')}Мастерская HR</button>` : ''}${model.isBackend && data.user.role === 'hr' ? `<button class="nav-button ${view === 'import' ? 'active' : ''}" data-action="import">Данные жюри</button>` : ''}</nav>
     <div class="sidebar-note"><strong>Демо правил</strong>Навыки и требования взяты из набора Career Quest. Пойнты и шаги внутри API Testing помечены как временные правила.</div>
     <div class="sidebar-bottom"><span class="avatar">${view === 'hr' ? 'HR' : escape(initials(employee.full_name))}</span><div>${view === 'hr' ? 'Режим HR' : escape(employee.full_name.split(' ')[0])}<small>${view === 'hr' ? 'Доступ к аналитике' : employee.grade + ' · личный кабинет'}</small></div></div></aside>
-    <main class="main"><header class="topbar"><div class="breadcrumb"><span>Рабочее пространство /</span><strong>${view === 'workshop' ? 'Мастерская HR' : view === 'hr' ? 'Обзор HR' : 'Мой рост'}</strong></div>
+    <main class="main"><header class="topbar"><div class="breadcrumb"><span>Рабочее пространство /</span><strong>${view === 'import' ? 'Данные жюри' : view === 'workshop' ? 'Мастерская HR' : view === 'hr' ? 'Обзор HR' : 'Мой рост'}</strong></div>
       <div class="top-actions"><span class="prototype-badge">Черновой прототип</span><button class="button secondary" data-action="reset">${model.isBackend ? 'Обновить данные' : 'Сбросить демо'}</button>${model.isBackend ? '<button class="button secondary" data-action="logout">Выйти</button>' : ''}</div></header>
-      <div class="content">${view === 'workshop' ? workshop.hrPage() : view === 'hr' ? hrPage() : employeePage(employee)}<p class="footnote">Модельная дата: ${date(data.asOf)} · HackAlem AI</p></div></main></div>`;
+      <div class="content">${view === 'import' ? importer.page() : view === 'workshop' ? workshop.hrPage() : view === 'hr' ? hrPage() : employeePage(employee)}<p class="footnote">Модельная дата: ${date(data.asOf)} · HackAlem AI</p></div></main></div>`;
 }
 
 function openDialog(content) { dialog.innerHTML = content; if (!dialog.open) dialog.showModal(); }
@@ -213,6 +216,8 @@ async function action(event) {
   const button = event.target.closest('[data-action]');
   if (!button) return;
   const actionName = button.dataset.action;
+  if (importer.action(actionName)) return;
+  if (actionName === 'import') { datasetInfo = await model.loadDataset(); view = 'import'; render(); return; }
   if (await workshop?.action(actionName, button)) return;
   if (actionName === 'ai-explain') { const employee = data.employees.find(e => e.employee_id === employeeId); const task = ai.request(model.snapshot(employee)); render(); await task; render(); return; }
   if (actionName === 'workshop') { if (model.isBackend) await model.loadWorkshop(); view = 'workshop'; render(); return; }
@@ -247,8 +252,8 @@ async function action(event) {
 
 const onAction = event => action(event).catch(error => toast(error.message));
 app.addEventListener('click', onAction);
-app.addEventListener('submit', event => workshop?.submit(event).catch(error => toast(error.message)));
-app.addEventListener('change', event => workshop?.change(event));
+app.addEventListener('submit', event => { if (event.target.id === 'import-form') void importer.submit(event); else workshop?.submit(event).catch(error => toast(error.message)); });
+app.addEventListener('change', event => { if (!importer.change(event)) workshop?.change(event); });
 app.addEventListener('input', event => workshop?.change(event));
 dialog.addEventListener('click', onAction);
 dialog.addEventListener('submit', async event => {
@@ -288,7 +293,7 @@ try {
   if (demoRules.meta?.kind !== 'demo-only') throw new Error('Файл временных правил не помечен как demo-only');
   model = createModel(data, demoRules);
   }
-  workshop = createWorkshop({ data, getModel: () => model, getEmployee: () => data.employees.find(e => e.employee_id === employeeId), rerender: render, toast, saved: { plans: {}, drafts: {} }, persist: () => true, eventTitle: title });
+  workshop = createWorkshop({ data, getModel: () => model, getEmployee: () => data.employees.find(e => e.employee_id === employeeId), rerender: render, toast, saved: { plans: {}, drafts: {} }, persist: () => true, eventTitle: title, getVersion: () => data.policyVersion });
   render();
 } catch (error) {
   app.innerHTML = `<main class="loading"><h1>Не удалось открыть данные</h1><p>Проверьте запуск сервера и обновите страницу.</p><p>${escape(error.message)}</p><a class="button" href="/">Повторить</a></main>`;
