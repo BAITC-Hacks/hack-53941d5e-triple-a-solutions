@@ -1,0 +1,2 @@
+record_id,employee_id,event_id,date,status,completion_pct,score,feedback_rating,assigned_by
+JURY_HISTORY_1,JURY_DEMO_1,EV_005,2026-09-20,no_show,0,,,self

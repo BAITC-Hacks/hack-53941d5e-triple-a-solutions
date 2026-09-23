@@ -5,6 +5,11 @@ export function applyGain(level, gain, ceiling) {
 }
 
 export function createModel(data, demoRules = {}) {
+  // Preserve the original demo API for the teammate's pure planning tools.
+  // Passing an explicit rules object uses session/points records; backend always does so.
+  const legacy = arguments.length < 2 || demoRules instanceof Map;
+  const initial = demoRules instanceof Map ? demoRules : new Map();
+  if (demoRules instanceof Map) demoRules = {};
   const eventMap = new Map(data.events.map(event => [event.event_id, event]));
   const skillMap = new Map(data.skills.map(skill => [skill.skill_id, skill]));
   const employeeMap = new Map(data.employees.map(employee => [employee.employee_id, employee]));
@@ -16,7 +21,9 @@ export function createModel(data, demoRules = {}) {
   }
   for (const rows of historyMap.values()) rows.sort((a, b) => a.date.localeCompare(b.date) || a.record_id.localeCompare(b.record_id));
 
-  const demoCompletions = new Map();
+  const demoCompletions = new Map([...initial].map(([id, events]) => [id, [...new Set(events)].map((eventId, i) => ({
+    id: `projection:${id}:${i}`, eventId, date: data.asOf, action: eventMap.get(eventId)?.title || eventId, points: 0,
+  }))]));
   const goals = new Map();
   const repeatable = new Set(demoRules.repeatableEventIds || []);
   const sessionPrograms = demoRules.sessionPrograms || {};
@@ -122,12 +129,12 @@ export function createModel(data, demoRules = {}) {
     return {
       employee, levels, history, done, goal, requirements, totalRequired: total, covered,
       coverage: total ? Math.round(covered / total * 100) : 100,
-      gaps: requirements.filter(skill => skill.gap > 0), simulated,
+      gaps: requirements.filter(skill => skill.gap > 0), simulated: legacy ? simulated.map(row => row.eventId) : simulated,
       pointLedger: ledger, totalPoints: ledger.reduce((sum, row) => sum + row.points, 0),
     };
   }
 
-  function recommend(employee) {
+  function available(employee) {
     const state = snapshot(employee);
     const candidates = [];
     for (const event of data.events) {
@@ -144,7 +151,11 @@ export function createModel(data, demoRules = {}) {
         const reduction = Math.min(skill.required, after) - Math.min(skill.required, skill.level);
         return reduction > 0 ? [{ ...skill, after, reduction, gain: after - skill.level }] : [];
       });
-      if (!impact.length) continue;
+      const skillGains = event.develops_skills.flatMap(gain => {
+        const level = state.levels[gain.skill_id] || 0, after = applyGain(level, gain.gain, gain.max_level);
+        return after > level ? [{ id: gain.skill_id, name: skillMap.get(gain.skill_id)?.name || gain.skill_id, level, after }] : [];
+      });
+      if (!skillGains.length) continue;
       const relatedHistory = state.history.filter(row => {
         const historicalEvent = eventMap.get(row.event_id);
         return historicalEvent && historicalEvent.type === event.type && historicalEvent.format === event.format && !historicalEvent.mandatory;
@@ -160,12 +171,14 @@ export function createModel(data, demoRules = {}) {
         ? Math.round((state.covered + impact.reduce((sum, item) => sum + item.reduction, 0)) / state.totalRequired * 100)
         : 100;
       candidates.push({
-        event, impact, session, program, successes, setbacks, ongoing, score, coverageAfter,
+        event, impact, skillGains, session, program, successes, setbacks, ongoing, score, coverageAfter,
         points: program ? program.rule.pointsPerSession : pointsFor(event),
       });
     }
     return candidates.sort((a, b) => b.score - a.score || a.event.event_id.localeCompare(b.event.event_id));
   }
+
+  function recommend(employee) { return available(employee).filter(item => item.impact.length); }
 
   function importantMisses(employee) {
     const state = snapshot(employee);
@@ -192,7 +205,7 @@ export function createModel(data, demoRules = {}) {
 
   function complete(employeeId, eventId) {
     const employee = employeeMap.get(employeeId);
-    const recommendation = employee && recommend(employee).find(item => item.event.event_id === eventId);
+    const recommendation = employee && available(employee).find(item => item.event.event_id === eventId);
     if (!employee || !recommendation) return false;
     if (!demoCompletions.has(employeeId)) demoCompletions.set(employeeId, []);
     const records = demoCompletions.get(employeeId);
@@ -209,7 +222,7 @@ export function createModel(data, demoRules = {}) {
     if (!repeatable.has(eventId) && records.some(row => row.eventId === eventId)) return false;
     const occurrence = records.filter(row => row.eventId === eventId).length;
     records.push({ id: `demo:${employeeId}:${eventId}:${occurrence}`, eventId, date: data.asOf, action: event.title, points: pointsFor(event) });
-    return { kind: 'activity', points: pointsFor(event), finished: true };
+    return legacy ? true : { kind: 'activity', points: pointsFor(event), finished: true };
   }
 
   function setGoal(employeeId, role, grade) {
@@ -269,7 +282,15 @@ export function createModel(data, demoRules = {}) {
   }
 
   return {
-    snapshot, recommend, complete, setGoal, overview, importantMisses, programProgress, pointsFor,
+    progress() {
+      return [...new Set([...goals.keys(), ...demoCompletions.keys()])].sort().map(employeeId => {
+        const base = employeeMap.get(employeeId)?.career_goal, selected = goals.get(employeeId);
+        const changed = selected && (selected.target_role !== base?.target_role || selected.target_grade !== base?.target_grade);
+        return { employeeId, goal: changed ? { role: selected.target_role, grade: selected.target_grade } : null,
+          simulated: recordsFor(employeeId).map(r => r.eventId) };
+      }).filter(row => row.goal || row.simulated.length);
+    },
+    snapshot, available, recommend, complete, setGoal, overview, importantMisses, programProgress, pointsFor,
     eventMap, skillMap, demoRules,
     reset() { demoCompletions.clear(); goals.clear(); },
   };
