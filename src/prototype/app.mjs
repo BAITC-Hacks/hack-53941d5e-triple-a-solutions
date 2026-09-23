@@ -1,4 +1,5 @@
 import { createModel, GRADES } from './model.mjs';
+import { createAiClient } from './ai-client.mjs';
 
 const app = document.querySelector('#app');
 const dialog = document.querySelector('#details');
@@ -39,6 +40,44 @@ const roleName = role => roles[role] || role;
 const initials = name => name.split(' ').slice(0, 2).map(part => part[0]).join('');
 const date = value => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short' }).format(new Date(value + 'T12:00:00'));
 let data, model, employeeId = 'E0005', view = 'employee', toastTimer;
+const aiClient = createAiClient();
+let aiStatus = { ready: false, message: 'Проверяем доступность AI…' }, aiMode = false;
+
+function recommendationView(employee) {
+  const state = model.snapshot(employee);
+  const local = model.recommend(employee);
+  const ai = aiClient.get(state);
+  const valid = ai.result?.source === 'ai' && ai.result.recommendations.length > 0
+    && ai.result.recommendations.every(row => local.some(item => item.event.event_id === row.event_id));
+  return { state, local, ai, isAi: Boolean(valid),
+    recs: valid ? ai.result.recommendations.map(row => ({ ...local.find(item => item.event.event_id === row.event_id), ai: row })) : local.slice(0, 3) };
+}
+
+function aiPanel(selection) {
+  const { ai, isAi, local } = selection;
+  const loading = ai.status === 'loading';
+  const message = loading ? 'Сопоставляем карьерную цель, разрывы в навыках и историю. Пока доступны рекомендации по правилам.'
+    : ai.result?.message || aiStatus.message;
+  return `<section class="ai-panel" aria-label="AI-подбор"><div><strong>${loading ? 'Подбираем с AI…' : isAi ? 'Ваш следующий шаг выбран с AI' : 'Персональный подбор'}</strong>
+    <p role="status">${escape(message)}</p></div><div class="ai-actions">
+    <button class="button ${isAi ? 'secondary' : ''}" data-action="ai" ${loading || !aiStatus.ready || !local.length ? 'disabled' : ''}>${loading ? 'Подбираем…' : isAi ? 'Обновить подбор' : 'Подобрать с AI'}</button>
+    ${isAi ? '<button class="button ghost" data-action="compare">Сравнить с подбором по правилам</button>' : ''}</div></section>`;
+}
+
+async function requestAi() {
+  if (!aiStatus.ready || view !== 'employee') return;
+  const employee = data.employees.find(person => person.employee_id === employeeId);
+  if (!model.recommend(employee).length) return;
+  aiMode = true;
+  const pending = aiClient.request(model.snapshot(employee));
+  render();
+  await pending;
+  render();
+}
+
+function refreshAiAfterChange() {
+  if (aiMode && view === 'employee') void requestAi();
+}
 
 function toast(message) {
   const node = document.querySelector('#toast');
@@ -56,7 +95,7 @@ function courseCard(item, index) {
       <span class="tag ${index === 0 ? 'priority' : ''}">${ongoing ? 'Уже в процессе' : index === 0 ? 'Начните с этого' : types[event.type]}</span></div>
     <h3>${escape(title(event))}</h3>
     <div class="course-meta">${escape(formats[event.format])} · ${event.duration_hours} ч · ${session ? date(session) : 'В любое время'}</div>
-    <p class="course-reason">${main.critical ? 'Закрывает критичный пробел' : 'Приближает к вашей цели'}: ${escape(main.name)} — сейчас ${main.level}, для цели нужен уровень ${main.required}.</p>
+    <p class="course-reason">${item.ai ? escape(item.ai.reason) : `${main.critical ? 'Закрывает критичный пробел' : 'Приближает к вашей цели'}: ${escape(main.name)} — сейчас ${main.level}, для цели нужен уровень ${main.required}.`}</p>
     <div class="impact"><span>${escape(main.name)}</span><strong>${main.level} → ${main.after}</strong></div>
     <div class="course-actions"><button class="button secondary" data-action="details" data-event="${escape(event.event_id)}">Почему мне?</button>
       <button class="button ghost" data-action="complete" data-event="${escape(event.event_id)}">Пройти в демо ${icon('arrow', 15)}</button></div>
@@ -70,8 +109,8 @@ function skillRow(skill) {
 }
 
 function employeePage(employee) {
-  const state = model.snapshot(employee);
-  const recs = model.recommend(employee).slice(0, 3);
+  const selection = recommendationView(employee);
+  const { state, recs } = selection;
   const history = [...state.simulated].reverse().map(id => ({ event_id: id, date: data.asOf, status: 'completed', demo: true }))
     .concat([...state.history].reverse()).slice(0, 4);
   const sameRole = state.goal.role === employee.role;
@@ -84,7 +123,8 @@ function employeePage(employee) {
       <p class="subline">${escape(goalDescription)}</p><button class="button" data-action="goal">Выбрать цель ${icon('arrow', 16)}</button>
       ${sameRole ? `<div class="career-track" aria-label="Грейды">${GRADES.map((grade, index) => `${index ? '<span class="track-line"></span>' : ''}<span class="stage ${grade === employee.grade ? 'current' : grade === state.goal.grade ? 'target' : ''}"><i></i>${grade}</span>`).join('')}</div>` : ''}</div>
       <div class="ring" style="--value:${state.coverage}"><div class="ring-inner"><b>${state.coverage}%</b><span>требований по навыкам закрыто</span></div></div></section>
-    <div class="section-head"><h2>Ваш следующий шаг</h2><span>Подбор по данным · без AI</span></div>
+    <div class="section-head"><h2>Ваш следующий шаг</h2><span>${selection.isAi ? 'Выбор AI · факты из профиля' : 'Подбор по правилам'}</span></div>
+    ${aiPanel(selection)}
     ${recs.length ? `<div class="cards">${recs.map(courseCard).join('')}</div>` : `<div class="empty"><h3>${state.gaps.length ? 'В каталоге пока нет подходящего шага' : 'Требования по навыкам закрыты'}</h3><p>${state.gaps.length ? 'Мы проверили роль, грейд, условия участия и историю. Можно обсудить новую активность с HR или изменить цель.' : 'Курсы не означают автоматическое повышение. Обсудите дальнейший путь с руководителем.'}</p></div>`}
     <div class="two-columns"><section class="panel"><h2>Навыки для цели</h2><p class="panel-intro">Текущий уровень / требуемый. Сначала — ключевые навыки.</p>${state.requirements.slice(0, 5).map(skillRow).join('')}
       <button class="button ghost" style="margin-top:15px" data-action="skills">Все навыки (${state.requirements.length}) ${icon('arrow', 15)}</button></section>
@@ -116,7 +156,7 @@ function render() {
   app.innerHTML = `<div class="shell"><aside class="sidebar"><div><div class="brand"><span class="brand-mark">${icon('chart', 23)}</span>Career Quest</div><div class="workspace">ПРОСТРАНСТВО РАЗВИТИЯ</div></div>
     <nav aria-label="Основные разделы"><p class="nav-label">Рабочее пространство</p><button class="nav-button ${view === 'employee' ? 'active' : ''}" ${view === 'employee' ? 'aria-current="page"' : ''} data-action="employee">${icon('road')}Мой рост</button>
       <button class="nav-button ${view === 'hr' ? 'active' : ''}" ${view === 'hr' ? 'aria-current="page"' : ''} data-action="hr">${icon('team')}Обзор HR</button></nav>
-    <div class="sidebar-note"><strong>Можно попробовать</strong>Выберите сотрудника, посмотрите причины рекомендаций и пройдите активность в демо.<br><br>Подбор работает по правилам. AI пока не подключён.</div>
+    <div class="sidebar-note"><strong>Ваш следующий шаг</strong>Выберите цель, сравните рекомендации и посмотрите, какие навыки развивает активность.<br><br>${aiStatus.ready ? 'AI помогает выбрать шаг. Прирост навыков рассчитывается по данным.' : 'Пока доступен подбор по правилам.'}</div>
     <div class="sidebar-bottom"><span class="avatar">${view === 'hr' ? 'HR' : escape(initials(employee.full_name))}</span><div>${view === 'hr' ? 'Режим HR' : escape(employee.full_name.split(' ')[0])}<small>${view === 'hr' ? 'Демонстрация роли' : employee.grade + ' · учебный профиль'}</small></div></div></aside>
     <main class="main"><header class="topbar"><div class="breadcrumb"><span>Рабочее пространство /</span><strong>${view === 'hr' ? 'Обзор HR' : 'Мой рост'}</strong></div>
       <div class="top-actions"><span class="prototype-badge">Черновой прототип</span><button class="button secondary" data-action="reset">Сбросить демо</button></div></header>
@@ -135,12 +175,24 @@ function showDetails(id) {
   const state = model.snapshot(employee);
   const item = model.recommend(employee).find(row => row.event.event_id === id);
   if (!item) return;
+  const ai = recommendationView(employee).recs.find(row => row.event.event_id === id)?.ai;
   openDialog(`${dialogHead(title(item.event))}<p>${escape(formats[item.event.format])} · ${item.event.duration_hours} ч · ${item.session ? date(item.session) : 'В любое время'}</p>
+    ${ai ? `<div class="ai-explanation"><h3>Почему AI выбрал этот шаг</h3><p>${escape(ai.reason)}</p><details><summary>Факты, на которые опирается рекомендация</summary><ul>${ai.evidence.map(fact => `<li>${escape(fact.text)}</li>`).join('')}</ul></details></div>` : ''}
     <div class="reason-block"><h3>01 · Ваша карьерная цель</h3><p>${escape(roleName(state.goal.role))}, ${state.goal.grade}. ${state.goal.assumed ? 'Это пока предположение — цель можно изменить.' : 'Цель указана в профиле.'}</p></div>
     <div class="reason-block"><h3>02 · Конкретный вклад в навыки</h3><p>${item.impact.map(skill => `${escape(skill.name)}: ${skill.level} → ${skill.after}, требуется ${skill.required}${skill.critical ? ' (ключевой навык)' : ''}`).join('<br>')}</p></div>
     <div class="reason-block"><h3>03 · История участия</h3><p>${item.successes ? `Завершённых активностей такого типа и формата: ${item.successes}. ` : 'Завершённых активностей такого типа и формата пока нет. '}${item.setbacks ? `Пропуски, отказы или прерывания: ${item.setbacks}. Этот сигнал снижает приоритет, но не определяет вашу мотивацию.` : 'Пропусков, отказов и прерываний такого типа и формата в истории нет.'}${item.ongoing ? ' Эта активность уже начата.' : ''}</p></div>
     <div class="reason-block"><h3>04 · Доступность</h3><p>Подходит вашей текущей роли и грейду. ${Object.keys(item.event.prerequisites).length ? 'Предварительные требования к навыкам выполнены.' : 'Предварительных требований нет.'} ${item.event.event_id === 'EV_036' ? 'Клуб допускает повторное участие.' : 'Курс ещё не завершён.'}</p></div>
-    <p>Это объяснение по правилам датасета. Генеративный AI в прототипе не используется.</p><div class="dialog-actions"><button class="button" data-action="complete" data-event="${escape(id)}">Пройти в демо ${icon('check', 17)}</button></div>`);
+    <p>${ai ? 'Приоритет и пояснение предложены AI. Числовой прирост и факты рассчитаны приложением. Рекомендация не гарантирует повышение.' : 'Это объяснение подбора по правилам датасета.'}</p><div class="dialog-actions"><button class="button" data-action="complete" data-event="${escape(id)}">Пройти в демо ${icon('check', 17)}</button></div>`);
+}
+
+function compareDialog() {
+  const employee = data.employees.find(person => person.employee_id === employeeId);
+  const selection = recommendationView(employee);
+  if (!selection.isAi) return;
+  const list = rows => `<ol>${rows.map(item => `<li><strong>${escape(title(item.event))}</strong><p>${item.impact.map(s => `${escape(s.name)}: ${s.level} → ${s.after} / ${s.required}`).join('; ')}</p></li>`).join('')}</ol>`;
+  openDialog(`${dialogHead('Два варианта следующего шага')}<div class="comparison"><section><h3>Подбор по правилам</h3>${list(selection.local.slice(0, 3))}</section><section><h3>Выбор AI</h3>${list(selection.recs)}</section></div>
+    <p>Оба варианта соблюдают условия участия. Разница в выборе сама по себе не означает улучшение: оцените пользу для цели, подходящий формат и объяснение.</p>
+    <p>Ответ модели: ${escape(selection.ai.result.model)} · ${selection.ai.result.cached ? 'из кеша' : `${(selection.ai.result.elapsedMs / 1000).toFixed(1)} с`}.</p>`);
 }
 
 function goalDialog() {
@@ -155,6 +207,8 @@ function action(event) {
   const button = event.target.closest('[data-action]');
   if (!button) return;
   const actionName = button.dataset.action;
+  if (actionName === 'ai') { void requestAi(); return; }
+  if (actionName === 'compare') return compareDialog();
   if (actionName === 'close') return dialog.close();
   if (actionName === 'details') return showDetails(button.dataset.event);
   if (actionName === 'goal') return goalDialog();
@@ -164,11 +218,11 @@ function action(event) {
   }
   if (actionName === 'complete') {
     if (model.complete(employeeId, button.dataset.event)) {
-      dialog.close(); render(); toast('Активность завершена в демо. Навыки и рекомендации пересчитаны.');
+      dialog.close(); render(); toast('Активность завершена в демо. Навыки и рекомендации пересчитаны.'); refreshAiAfterChange();
     } else toast('Активность уже завершена или больше не подходит.');
     return;
   }
-  if (actionName === 'reset') { model.reset(); dialog.close(); render(); toast('Изменения демо сброшены. Исходные данные восстановлены.'); return; }
+  if (actionName === 'reset') { model.reset(); aiClient.reset(); aiMode = false; dialog.close(); render(); toast('Изменения демо сброшены. Исходные данные восстановлены.'); return; }
   if (actionName === 'person') { employeeId = button.dataset.person; view = 'employee'; }
   else view = actionName === 'hr' ? 'hr' : 'employee';
   render(); window.scrollTo({ top: 0, behavior: 'instant' });
@@ -177,14 +231,14 @@ function action(event) {
 app.addEventListener('click', action);
 dialog.addEventListener('click', action);
 app.addEventListener('change', event => {
-  if (event.target.id === 'employee-picker') { employeeId = event.target.value; render(); document.querySelector('#employee-picker')?.focus(); }
+  if (event.target.id === 'employee-picker') { employeeId = event.target.value; render(); document.querySelector('#employee-picker')?.focus(); refreshAiAfterChange(); }
 });
 dialog.addEventListener('submit', event => {
   if (event.target.id !== 'goal-form') return;
   event.preventDefault();
   const form = new FormData(event.target);
   if (model.setGoal(employeeId, form.get('role'), form.get('grade'))) {
-    dialog.close(); render(); toast('Цель обновлена. Подобрали следующие шаги.');
+    dialog.close(); render(); toast('Цель обновлена. Подобрали следующие шаги.'); refreshAiAfterChange();
   }
 });
 
@@ -195,6 +249,12 @@ try {
   if (!data.employees?.length || !data.events?.length) throw new Error('Неполный набор данных');
   model = createModel(data);
   render();
+  fetch('/api/ai/status').then(response => {
+    if (!response.ok) throw new Error('unavailable');
+    return response.json();
+  }).then(status => { aiStatus = status; render(); }).catch(() => {
+    aiStatus = { ready: false, message: 'Доступен подбор по правилам. AI-сервис сейчас не подключён.' }; render();
+  });
 } catch (error) {
   app.innerHTML = `<main class="loading"><h1>Не удалось открыть данные</h1><p>Подготовьте локальный набор командой из README прототипа и обновите страницу.</p><p>${escape(error.message)}</p></main>`;
 }

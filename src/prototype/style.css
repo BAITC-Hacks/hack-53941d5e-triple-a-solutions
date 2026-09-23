@@ -58,6 +58,20 @@ select { background: #fff; border: 1px solid #d7e0e1; color: var(--ink); padding
 .section-head h2 { font-size: 20px; letter-spacing: -.45px; margin: 0; }
 .section-head span { font-size: 13px; color: var(--muted); }
 .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 15px; }
+.ai-panel { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 20px; margin-bottom: 16px; border: 1px solid #c9ded5; border-radius: 12px; background: #edf7f1; }
+.ai-panel strong { font-size: 15px; }
+.ai-panel p { font-size: 13px; line-height: 1.6; color: var(--muted); margin: 6px 0 0; max-width: 650px; }
+.ai-actions { display: flex; flex-direction: column; align-items: flex-start; flex-shrink: 0; }
+.ai-actions .ghost { font-size: 12px; text-align: left; }
+.ai-explanation { padding: 16px; margin-top: 20px; border-radius: 12px; background: #edf7f1; }
+.ai-explanation h3, .comparison h3 { font-size: 15px; }
+.ai-explanation p, .ai-explanation li, .comparison p { font-size: 14px; line-height: 1.65; }
+.ai-explanation summary { font-size: 13px; cursor: pointer; margin-top: 10px; }
+.ai-explanation ul { padding-left: 20px; }
+.comparison ol { padding-left: 22px; font-size: 14px; }
+.comparison li { margin-bottom: 12px; }
+.comparison p { margin: 5px 0; color: var(--muted); }
+@media (max-width: 720px) { .ai-panel { flex-direction: column; align-items: stretch; gap: 12px; } .ai-actions { align-items: stretch; } }
 .course { background: #fff; border: 1px solid var(--line); border-radius: 13px; padding: 21px; display: flex; flex-direction: column; min-width: 0; }
 .course-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 17px; }
 .course-icon { width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; color: #376f57; background: #eaf5ee; }

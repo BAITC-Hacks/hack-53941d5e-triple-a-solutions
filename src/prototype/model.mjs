@@ -4,7 +4,7 @@ export function applyGain(level, gain, ceiling) {
   return Math.max(level, Math.min(level + gain, ceiling, 5));
 }
 
-export function createModel(data) {
+export function createModel(data, initialCompletions = new Map()) {
   const eventMap = new Map(data.events.map(event => [event.event_id, event]));
   const skillMap = new Map(data.skills.map(skill => [skill.skill_id, skill]));
   const historyMap = new Map();
@@ -14,7 +14,7 @@ export function createModel(data) {
     historyMap.get(row.employee_id).push(row);
   }
   for (const rows of historyMap.values()) rows.sort((a, b) => a.date.localeCompare(b.date) || a.record_id.localeCompare(b.record_id));
-  const simulated = new Map();
+  const simulated = new Map([...initialCompletions].map(([id, events]) => [id, new Set(events)]));
   const goals = new Map();
 
   function goalFor(employee) {
