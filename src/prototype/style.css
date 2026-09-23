@@ -210,3 +210,21 @@ dialog::backdrop { background: #12272d70; backdrop-filter: blur(3px); }
 
 .import-option { display: flex; gap: 10px; align-items: center; margin: 20px 0; }
 .import-example { overflow: auto; white-space: pre-wrap; background: #f5f7fb; padding: 14px; border-radius: 8px; }
+.import-upload-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 22px; }
+.import-upload { position: relative; display: flex; flex-direction: column; align-items: flex-start; min-width: 0; padding: 22px; border: 1px dashed #b7cec3; border-radius: 14px; background: #f8fbf9; transition: border-color .18s, background .18s, box-shadow .18s; }
+.import-upload:hover:not([data-disabled]) { border-color: #51856b; background: #f0f7f3; box-shadow: 0 4px 16px #1e4f3610; }
+.import-upload:has(input:focus-visible) { outline: 3px solid #73b596; outline-offset: 3px; }
+.import-upload[data-selected="true"] { border-style: solid; border-color: #83ad97; background: #eff7f2; }
+.import-upload[data-disabled] { opacity: .6; }
+.import-file-input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; z-index: 1; }
+.import-file-input:disabled { cursor: wait; }
+.import-upload-top { display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 12px; margin-bottom: 20px; }
+.import-file-icon { display: grid; place-items: center; width: 44px; height: 44px; color: #285d48; background: #e3efe7; border-radius: 12px; }
+.import-file-format { padding: 4px 8px; border: 1px solid #d5e5db; border-radius: 6px; font-size: 11px; font-weight: 650; letter-spacing: .6px; color: #537165; background: #fff; }
+.import-upload-title { font-size: 16px; font-weight: 650; color: var(--ink); }
+.import-file-name { width: 100%; font-size: 13px; line-height: 1.5; color: var(--muted); margin: 7px 0 20px; overflow-wrap: anywhere; }
+.import-upload[data-selected="true"] .import-file-name { color: #285d48; }
+.import-upload-button { display: inline-flex; align-items: center; justify-content: center; gap: 16px; margin-top: auto; padding: 10px 14px; border: 1px solid #c8dcd0; border-radius: 8px; background: #fff; color: #285d48; font-size: 13px; font-weight: 600; box-shadow: 0 1px 2px #183a2910; }
+.import-upload:hover:not([data-disabled]) .import-upload-button { background: #285d48; border-color: #285d48; color: #fff; }
+@media (max-width: 560px) { .import-upload-grid { grid-template-columns: 1fr; } .import-upload { padding: 18px; } }
+@media (prefers-reduced-motion: reduce) { .import-upload { transition: none; } }
