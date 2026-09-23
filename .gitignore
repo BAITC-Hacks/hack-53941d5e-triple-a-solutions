@@ -10,3 +10,20 @@ node_modules/
 .next/
 dist/
 coverage/
+
+# Local research checkout; install instructions are in docs/research.md
+/unfairgaps-os/
+
+# Environment files; only templates belong in Git
+.env.*
+!.env.example
+!.env.*.example
+
+# Python and local artifacts
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.log
+/data/private/
+/artifacts/
