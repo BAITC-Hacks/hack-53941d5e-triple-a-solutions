@@ -1,0 +1,30 @@
+{
+  "meta": {
+    "kind": "demo-only",
+    "label": "Временные правила пойнтов",
+    "reason": "В исходных данных нет правил начисления пойнтов и сущности отдельных сессий."
+  },
+  "pointsByEventType": {
+    "course": 4,
+    "workshop": 3,
+    "mentoring": 3,
+    "certification": 5,
+    "meetup": 1,
+    "compliance": 2,
+    "onboarding": 2,
+    "default": 2
+  },
+  "repeatableEventIds": ["EV_036"],
+  "sessionPrograms": {
+    "EV_019": {
+      "skillId": "SK_API_TESTING",
+      "pointsPerSession": 1,
+      "completionRule": "all_sessions",
+      "sessionLabels": [
+        "Контракты и позитивные сценарии",
+        "Авторизация и негативные сценарии",
+        "Нагрузка и отчёт о качестве"
+      ]
+    }
+  }
+}

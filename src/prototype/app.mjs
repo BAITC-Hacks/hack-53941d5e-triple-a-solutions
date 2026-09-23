@@ -1,4 +1,4 @@
-import { createModel, GRADES } from './model.mjs';
+import { applyGain, createModel, GRADES } from './model.mjs';
 
 const app = document.querySelector('#app');
 const dialog = document.querySelector('#details');
@@ -23,22 +23,20 @@ const eventTitles = ['Информационная безопасность', '�
   'Клуб публичных выступлений', 'Траектория ментора', 'Основы лидерства', 'Время и приоритеты', 'Системное решение проблем'];
 const formats = { online: 'Онлайн', offline: 'Очно', self_paced: 'В своём темпе' };
 const types = { course: 'Курс', workshop: 'Практикум', mentoring: 'Менторство', certification: 'Сертификация', meetup: 'Клуб', compliance: 'Обязательное', onboarding: 'Онбординг' };
-const statuses = { completed: 'Завершено', in_progress: 'В процессе', dropped: 'Прервано', no_show: 'Пропуск', declined: 'Отказ от участия', overdue: 'Срок прошёл' };
 const paths = {
-  chart: '<path d="M5 19V12m7 7V5m7 14V9"/>',
-  road: '<path d="M4 18h4v-5h7V7h5M17 4l3 3-3 3"/>',
+  chart: '<path d="M5 19V12m7 7V5m7 14V9"/>', road: '<path d="M4 18h4v-5h7V7h5M17 4l3 3-3 3"/>',
   team: '<circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2m1-15a3 3 0 0 1 0 6m2 4a4 4 0 0 1 3 4"/>',
   book: '<path d="M3 4h6a4 4 0 0 1 3 2 4 4 0 0 1 3-2h6v15h-6a4 4 0 0 0-3 2 4 4 0 0 0-3-2H3zM12 6v15"/>',
-  check: '<path d="m5 12 4 4L19 6"/>',
-  arrow: '<path d="M5 12h14m-5-5 5 5-5 5"/>',
-  clock: '<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/>',
+  check: '<path d="m5 12 4 4L19 6"/>', arrow: '<path d="M5 12h14m-5-5 5 5-5 5"/>',
+  clock: '<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/>', star: '<path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/>',
+  alert: '<path d="M12 4 3 20h18L12 4Zm0 5v5m0 3h.01"/>',
 };
 const icon = (name, size = 20) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.book}</svg>`;
-const title = event => eventTitles[Number(event.event_id.slice(3)) - 1] || event.title;
+const title = event => event ? (eventTitles[Number(event.event_id.slice(3)) - 1] || event.title) : 'Неизвестная активность';
 const roleName = role => roles[role] || role;
 const initials = name => name.split(' ').slice(0, 2).map(part => part[0]).join('');
-const date = value => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short' }).format(new Date(value + 'T12:00:00'));
-let data, model, employeeId = 'E0005', view = 'employee', toastTimer;
+const date = value => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(value + 'T12:00:00'));
+let data, demoRules, model, employeeId = 'E0066', view = 'employee', toastTimer;
 
 function toast(message) {
   const node = document.querySelector('#toast');
@@ -48,66 +46,102 @@ function toast(message) {
   toastTimer = setTimeout(() => node.classList.remove('visible'), 4500);
 }
 
-function courseCard(item, index) {
-  const { event, impact, session, ongoing } = item;
-  const main = impact.find(skill => skill.critical) || impact[0];
-  return `<article class="course">
-    <div class="course-top"><span class="course-icon">${icon(event.type === 'mentoring' ? 'team' : 'book', 23)}</span>
-      <span class="tag ${index === 0 ? 'priority' : ''}">${ongoing ? 'Уже в процессе' : index === 0 ? 'Начните с этого' : types[event.type]}</span></div>
-    <h3>${escape(title(event))}</h3>
-    <div class="course-meta">${escape(formats[event.format])} · ${event.duration_hours} ч · ${session ? date(session) : 'В любое время'}</div>
-    <p class="course-reason">${main.critical ? 'Закрывает критичный пробел' : 'Приближает к вашей цели'}: ${escape(main.name)} — сейчас ${main.level}, для цели нужен уровень ${main.required}.</p>
-    <div class="impact"><span>${escape(main.name)}</span><strong>${main.level} → ${main.after}</strong></div>
-    <div class="course-actions"><button class="button secondary" data-action="details" data-event="${escape(event.event_id)}">Почему мне?</button>
-      <button class="button ghost" data-action="complete" data-event="${escape(event.event_id)}">Пройти в демо ${icon('arrow', 15)}</button></div>
-  </article>`;
-}
-
 function skillRow(skill) {
-  const pct = Math.min(100, skill.level / skill.required * 100);
+  const pct = skill.required ? Math.min(100, skill.level / skill.required * 100) : 100;
   return `<div class="skill"><div class="skill-line"><span class="skill-label">${escape(skill.name)}${skill.critical ? '<span class="critical">Ключевой</span>' : ''}</span><b>${skill.level} / ${skill.required}</b></div>
     <div class="meter" role="progressbar" aria-label="${escape(skill.name)}: ${skill.level} из ${skill.required}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pct)}"><span style="width:${pct}%"></span></div></div>`;
 }
 
+function courseCard(item, index) {
+  const { event, impact, session, ongoing } = item;
+  const main = impact.find(skill => skill.critical) || impact[0];
+  const skills = impact.map(skill => `${escape(skill.name)} +${skill.gain}`).join(' · ');
+  return `<article class="course">
+    <div class="course-top"><span class="course-icon">${icon(event.type === 'mentoring' ? 'team' : 'book', 23)}</span>
+      <span class="tag ${main.critical ? 'priority' : ''}">${main.critical ? 'Ключевой для цели' : index === 0 ? 'Рекомендуем начать' : 'Нужен для цели'}</span></div>
+    <h3>${escape(title(event))}</h3>
+    <div class="course-meta">${escape(types[event.type])} · ${escape(formats[event.format])} · ${event.duration_hours} ч · ${session ? date(session) : 'В любое время'}</div>
+    <p class="course-reason"><strong>${escape(main.name)}</strong>: сейчас ${main.level}, для роли нужно ${main.required}. Ожидаемый прирост: ${skills}.</p>
+    <div class="career-effect"><span>Прогресс к цели</span><strong>${item.coverageAfter > item.coverage ? `${item.coverage}% → ${item.coverageAfter}%` : `ещё ${main.gap} ур.`}</strong></div>
+    <div class="point-line">${icon('star', 16)} <b>+${item.points} пойнта</b><span>за завершение</span></div>
+    <div class="course-actions"><button class="button secondary" data-action="details" data-event="${escape(event.event_id)}">Почему мне?</button>
+      <button class="button ghost" data-action="complete" data-event="${escape(event.event_id)}">Завершить в демо ${icon('arrow', 15)}</button></div>
+  </article>`;
+}
+
+function sessionCard(employee, state, recommendation) {
+  const program = model.programProgress(employee, 'EV_019');
+  if (!program || !program.event.target_roles.includes(employee.role) || !program.event.target_grades.includes(employee.grade)) return '';
+  const skill = state.requirements.find(item => item.id === program.rule.skillId);
+  if (!skill) return '';
+  const affected = program.event.develops_skills.flatMap(item => {
+    const requirement = state.requirements.find(row => row.id === item.skill_id);
+    if (!requirement) return [];
+    return [`${requirement.name}: ${requirement.level} → ${applyGain(requirement.level, item.gain, item.max_level)}`];
+  }).join(' · ');
+  const coverageAfter = recommendation?.coverageAfter ?? state.coverage;
+  return `<article class="course session-course ${program.finished ? 'finished' : ''}">
+    <div class="course-top"><span class="course-icon">${icon(program.finished ? 'check' : 'book', 23)}</span><span class="tag priority">${program.finished ? 'Все сессии завершены' : `Программа из ${program.total} сессий`}</span></div>
+    <h3>${escape(title(program.event))}</h3>
+    <div class="session-summary"><b>${program.completed} из ${program.total}</b><span>${program.pointsEarned} из ${program.totalPoints} пойнтов</span></div>
+    <div class="session-meter"><span style="width:${program.total ? program.completed / program.total * 100 : 0}%"></span></div>
+    <div class="session-list">${program.sessions.map(item => `<div class="session-item ${item.completed ? 'done' : ''}"><span>${item.completed ? icon('check', 14) : item.index + 1}</span><div><b>${escape(item.label)}</b><small>${date(item.date)} · ${item.completed ? `завершено, +${program.rule.pointsPerSession} пойнт` : 'ещё не завершено'}</small></div></div>`).join('')}</div>
+    <p class="course-reason"><strong>${escape(skill.name)}</strong> — ${skill.critical ? 'ключевой' : 'важный'} навык для ${escape(roleName(state.goal.role))}, ${state.goal.grade}. ${program.finished ? `После программы уровень обновлён до ${skill.level}; до требования осталось ${skill.gap}.` : `После всех сессий: ${escape(affected)}; прогресс к цели ${state.coverage}% → ${coverageAfter}%.`}</p>
+    <div class="point-line">${icon('star', 16)} <b>+${program.rule.pointsPerSession} пойнт</b><span>за каждую завершённую сессию</span></div>
+    <button class="button session-button" data-action="complete" data-event="${program.event.event_id}" ${program.finished || !recommendation ? 'disabled' : ''}>${program.finished ? `Получено ${program.totalPoints} пойнта` : `Завершить сессию ${program.completed + 1}`}</button>
+  </article>`;
+}
+
+function missedBanner(miss) {
+  if (!miss) return '';
+  const next = miss.nextStep ? `Следующий полезный шаг: «${title(miss.nextStep.event)}».` : 'Следующий шаг лучше подобрать вместе с HR или руководителем.';
+  return `<section class="missed-note">${icon('alert', 22)}<div><strong>Есть важный пропуск, который стоит наверстать</strong><p>Вы пропустили ${miss.count} ${miss.count === 1 ? 'занятие' : 'занятия'} по теме «${escape(title(miss.event))}». Навык ${escape(miss.skill.name)} важен для перехода на выбранную роль; сейчас до требования не хватает ${miss.skill.gap} ур. ${escape(next)}</p><small>Пойнты и уже достигнутый уровень за пропуск не снижаются.</small></div></section>`;
+}
+
 function employeePage(employee) {
   const state = model.snapshot(employee);
-  const recs = model.recommend(employee).slice(0, 3);
-  const history = [...state.simulated].reverse().map(id => ({ event_id: id, date: data.asOf, status: 'completed', demo: true }))
-    .concat([...state.history].reverse()).slice(0, 4);
+  const recommendations = model.recommend(employee).map(item => ({ ...item, coverage: state.coverage }));
+  const programRecommendation = recommendations.find(item => item.event.event_id === 'EV_019');
+  const recs = recommendations.filter(item => item.event.event_id !== 'EV_019').slice(0, 2);
+  const miss = model.importantMisses(employee)[0];
   const sameRole = state.goal.role === employee.role;
   const goalHeading = sameRole ? `${employee.grade} → ${state.goal.grade}` : `${roleName(state.goal.role)} · ${state.goal.grade}`;
-  const goalDescription = state.goal.assumed ? 'Цель пока не задана. Мы показали возможный ориентир — вы можете выбрать свой.'
-    : `Ваша цель: ${roleName(state.goal.role)}. ${state.gaps.length ? `Навыков для развития: ${state.gaps.length}. Начните с одного подходящего шага.` : 'Требования по навыкам закрыты. Следующий шаг обсудите с руководителем.'}`;
-  return `<div class="page-heading"><div><h1>Мой план развития</h1><p class="subtitle">${escape(employee.full_name)} · ${escape(roleName(employee.role))}</p></div>
-    <div class="picker"><label for="employee-picker">Посмотреть другого сотрудника</label><select id="employee-picker">${data.employees.map(person => `<option value="${escape(person.employee_id)}" ${person.employee_id === employeeId ? 'selected' : ''}>${escape(person.full_name)} · ${person.grade}</option>`).join('')}</select></div></div>
+  const goalDescription = state.goal.assumed ? 'Цель пока не задана. Мы показали возможный ориентир — его можно изменить.'
+    : `Ваша цель: ${roleName(state.goal.role)}. ${state.gaps.length ? `До неё нужно развить ${state.gaps.length} навыков.` : 'Требования по навыкам закрыты; следующий шаг обсудите с руководителем.'}`;
+  const session = sessionCard(employee, state, programRecommendation);
+  return `<div class="page-heading"><div><h1>Мой план развития</h1><p class="subtitle">${escape(employee.full_name)} · ${escape(roleName(employee.role))} · ${employee.grade}</p></div>
+    <div class="points-total"><span>${icon('star', 18)} Накоплено</span><b>${state.totalPoints}</b><small>демо-пойнтов</small></div></div>
     <section class="hero" aria-label="Карьерная цель"><div><p class="eyebrow">${state.goal.assumed ? 'Возможная траектория' : 'Ваша траектория'}</p><h2>${escape(goalHeading)}</h2>
       <p class="subline">${escape(goalDescription)}</p><button class="button" data-action="goal">Выбрать цель ${icon('arrow', 16)}</button>
       ${sameRole ? `<div class="career-track" aria-label="Грейды">${GRADES.map((grade, index) => `${index ? '<span class="track-line"></span>' : ''}<span class="stage ${grade === employee.grade ? 'current' : grade === state.goal.grade ? 'target' : ''}"><i></i>${grade}</span>`).join('')}</div>` : ''}</div>
       <div class="ring" style="--value:${state.coverage}"><div class="ring-inner"><b>${state.coverage}%</b><span>требований по навыкам закрыто</span></div></div></section>
-    <div class="section-head"><h2>Ваш следующий шаг</h2><span>Подбор по данным · без AI</span></div>
-    ${recs.length ? `<div class="cards">${recs.map(courseCard).join('')}</div>` : `<div class="empty"><h3>${state.gaps.length ? 'В каталоге пока нет подходящего шага' : 'Требования по навыкам закрыты'}</h3><p>${state.gaps.length ? 'Мы проверили роль, грейд, условия участия и историю. Можно обсудить новую активность с HR или изменить цель.' : 'Курсы не означают автоматическое повышение. Обсудите дальнейший путь с руководителем.'}</p></div>`}
-    <div class="two-columns"><section class="panel"><h2>Навыки для цели</h2><p class="panel-intro">Текущий уровень / требуемый. Сначала — ключевые навыки.</p>${state.requirements.slice(0, 5).map(skillRow).join('')}
-      <button class="button ghost" style="margin-top:15px" data-action="skills">Все навыки (${state.requirements.length}) ${icon('arrow', 15)}</button></section>
-      <section class="panel"><h2>Последняя активность</h2><p class="panel-intro">История обучения и ваши шаги в этом макете.</p>${history.map(row => `<div class="history-row"><div class="history-icon ${row.status === 'completed' ? '' : 'neutral'}">${icon(row.status === 'completed' ? 'check' : 'clock', 15)}</div><div><strong>${escape(title(model.eventMap.get(row.event_id)))}</strong><p>${row.demo ? 'Только в демо' : date(row.date)} · ${statuses[row.status] || escape(row.status)}</p></div></div>`).join('') || '<p class="subtitle">Истории пока нет.</p>'}</section></div>
-    <p class="footnote">Прогресс показывает покрытие требований по навыкам, а не вероятность повышения. Завершения после оценки учитываются по дате из истории; для самостоятельных курсов это приближение. Все изменения в макете сбрасываются при обновлении страницы.</p>`;
+    ${missedBanner(miss)}
+    <div class="section-head"><h2>Активности и вклад в карьерную цель</h2><span>Пойнты мотивируют, уровни навыков определяют прогресс</span></div>
+    ${session || recs.length ? `<div class="cards ${session ? 'with-session' : ''}">${session}${recs.map(courseCard).join('')}</div>` : `<div class="empty"><h3>${state.gaps.length ? 'В каталоге пока нет подходящего шага' : 'Требования по навыкам закрыты'}</h3><p>${state.gaps.length ? 'Проверены роль, грейд, условия участия и история. Можно обсудить новую активность с HR.' : 'Завершённые курсы не означают автоматическое повышение.'}</p></div>`}
+    <div class="two-columns"><section class="panel"><h2>Навыки для цели</h2><p class="panel-intro">Текущий уровень / требуемый. Сначала показаны ключевые навыки.</p>${state.requirements.slice(0, 6).map(skillRow).join('') || '<p class="subtitle">Для выбранной цели требования не найдены.</p>'}
+      ${state.requirements.length > 6 ? `<button class="button ghost" data-action="skills">Все навыки (${state.requirements.length}) ${icon('arrow', 15)}</button>` : ''}</section>
+      <section class="panel"><h2>История начислений</h2><p class="panel-intro">За какое действие, когда и сколько пойнтов начислено.</p>${state.pointLedger.slice(0, 6).map(row => `<div class="point-history"><span class="history-icon">${icon('star', 14)}</span><div><strong>${escape(title(model.eventMap.get(row.eventId)))}</strong><p>${escape(row.action.replace(model.eventMap.get(row.eventId)?.title || '', '').replace(/^: /, '') || 'Активность завершена')} · ${date(row.date)}</p></div><b>+${row.points}</b></div>`).join('') || '<div class="empty compact"><p>Начислений пока нет. Завершите первую активность.</p></div>'}<p class="demo-caption">Начисления рассчитаны по временным правилам из отдельного файла. В исходном API поля пойнтов нет.</p></section></div>
+    <p class="footnote">Пойнты не заменяют уровни навыков и требования грейда. Пропуски не уменьшают пойнты или достигнутый уровень. Все действия демо сбрасываются при обновлении страницы.</p>`;
 }
 
 function hrPage() {
   const overview = model.overview();
-  const people = overview.noSteps.slice(0, 6);
-  return `<div class="page-heading"><div><h1>Развитие команды</h1><p class="subtitle">Где нужна поддержка и каких возможностей пока не хватает.</p></div><span class="tag">${data.employees.length} синтетических профилей</span></div>
-    <div class="notice">Это демонстрация экрана HR. Переключение ролей открыто для знакомства с продуктом; авторизация и разграничение доступа пока не реализованы.</div>
-    <div class="stats"><div class="stat"><span>Сотрудников</span><b>${data.employees.length}</b><small>8 профессиональных ролей</small></div>
-      <div class="stat"><span>Нужно выбрать цель</span><b>${overview.noGoal}</b><small>Пока показана предполагаемая</small></div>
-      <div class="stat"><span>Нет следующего шага</span><b>${overview.noSteps.length}</b><small>Есть пробелы, нет активности</small></div>
-      <div class="stat"><span>Завершений обучения</span><b>${overview.activityCount.toLocaleString('ru-RU')}</b><small>За весь период истории и демо</small></div></div>
-    <div class="two-columns"><section class="panel"><h2>Частые пробелы в навыках</h2><p class="panel-intro">Число сотрудников с пробелом относительно выбранной или предполагаемой цели.</p>
-      ${overview.shortages.slice(0, 6).map(skill => `<div class="skill"><div class="skill-line"><span>${escape(skill.name)}</span><b>${skill.count} чел.</b></div><div class="meter"><span style="width:${skill.count / data.employees.length * 100}%"></span></div></div>`).join('')}</section>
-      <section class="panel"><h2>Участие в активностях</h2><p class="panel-intro">Все ${data.history.length.toLocaleString('ru-RU')} записей исходной истории. Пропуск сам по себе не объясняет причину.</p>
-      ${Object.entries(statuses).map(([key, label]) => { const count = data.history.filter(row => row.status === key).length; return `<div class="skill"><div class="skill-line"><span>${label}</span><b>${count.toLocaleString('ru-RU')}</b></div><div class="meter"><span style="width:${count / data.history.length * 100}%"></span></div></div>`; }).join('')}</section></div>
-    <div class="section-head"><h2>Помочь с подбором следующего шага</h2><span>Первые ${people.length} из ${overview.noSteps.length} · без рейтинга сотрудников</span></div>
-    <section class="panel table-wrap">${people.length ? `<table><thead><tr><th>Сотрудник</th><th>Цель</th><th>Что мешает</th><th></th></tr></thead><tbody>${people.map(state => `<tr><td><div class="person-cell"><span class="avatar">${escape(initials(state.employee.full_name))}</span><span>${escape(state.employee.full_name)}<small>${escape(roleName(state.employee.role))} · ${state.employee.grade}</small></span></div></td><td>${escape(roleName(state.goal.role))}<small>${state.goal.grade}${state.goal.assumed ? ' · предположение' : ''}</small></td><td>Нет допустимой активности<small>Пробелов в навыках: ${state.gaps.length}</small></td><td><button class="row-button" data-action="person" data-person="${state.employee.employee_id}">Профиль →</button></td></tr>`).join('')}</tbody></table>` : '<p class="subtitle">Для всех сотрудников с пробелами найден хотя бы один следующий шаг.</p>'}</section>
-    <p class="footnote">Сведения о навыках используются для поддержки развития. Сравнительный рейтинг сотрудников не рассчитывается. Данные — учебный набор Career Quest.</p>`;
+  const people = overview.repeatedImportantMisses.slice(0, 8);
+  return `<div class="page-heading"><div><h1>Участие в развитии</h1><p class="subtitle">Пропуски в контексте карьерных целей, без рейтинга сотрудников.</p></div><span class="tag">HR-раздел · ${data.employees.length} профилей</span></div>
+    <div class="notice">Индивидуальная история доступна только здесь, в HR-разделе. Причина пропуска неизвестна, поэтому данные служат сигналом для поддержки, а не оценкой сотрудника.</div>
+    <div class="stats"><div class="stat"><span>Всего пропусков</span><b>${overview.totalMisses}</b><small>Статус no_show в истории</small></div>
+      <div class="stat"><span>Повторные важные пропуски</span><b>${overview.repeatedImportantMisses.length}</b><small>2+ пропуска, связанных с целью</small></div>
+      <div class="stat"><span>Затронуто навыков</span><b>${overview.missedSkills.length}</b><small>Есть незакрытое требование роли</small></div>
+      <div class="stat"><span>Нет следующего шага</span><b>${overview.noSteps.length}</b><small>Есть пробел, нет доступной активности</small></div></div>
+    <div class="two-columns"><section class="panel"><h2>Часто пропускаемые мероприятия</h2><p class="panel-intro">События со статусом no_show во всём наборе данных.</p>
+      ${overview.eventMisses.slice(0, 6).map(item => `<div class="metric-row"><span>${escape(title(item.event))}<small>${item.employees} сотрудников</small></span><b>${item.count} проп.</b></div>`).join('') || '<p class="subtitle">Пропусков нет.</p>'}</section>
+      <section class="panel"><h2>Навыки, связанные с пропусками</h2><p class="panel-intro">Учитываются только навыки, которые нужны для выбранной цели и пока не достигнуты.</p>
+      ${overview.missedSkills.slice(0, 6).map(item => `<div class="skill"><div class="skill-line"><span>${escape(item.name)}<small>${item.employees} сотрудников</small></span><b>${item.misses} проп.</b></div><div class="meter warning"><span style="width:${Math.min(100, item.misses / Math.max(1, overview.totalMisses) * 300)}%"></span></div></div>`).join('') || '<p class="subtitle">Связанных с целями пропусков нет.</p>'}</section></div>
+    <div class="section-head"><h2>Кому может понадобиться поддержка</h2><span>Повторные пропуски важных активностей · алфавитный порядок</span></div>
+    <section class="panel table-wrap">${people.length ? `<table><thead><tr><th>Сотрудник</th><th>Карьерная цель</th><th>Связанные навыки</th><th>Пропуски</th><th></th></tr></thead><tbody>${people.map(item => `<tr><td><div class="person-cell"><span class="avatar">${escape(initials(item.state.employee.full_name))}</span><span>${escape(item.state.employee.full_name)}<small>${escape(roleName(item.state.employee.role))} · ${item.state.employee.grade}</small></span></div></td><td>${escape(roleName(item.state.goal.role))}<small>${item.state.goal.grade}${item.state.goal.assumed ? ' · предполагаемая' : ''}</small></td><td>${escape([...new Set(item.misses.map(miss => miss.skill.name))].slice(0, 2).join(', '))}</td><td>${item.importantCount}</td><td><button class="row-button" data-action="hr-person" data-person="${item.state.employee.employee_id}">Подробнее →</button></td></tr>`).join('')}</tbody></table>` : '<p class="subtitle">Повторных пропусков важных активностей нет.</p>'}</section>
+    <div class="section-head"><h2>Агрегация по командам</h2><span>Количество, без сравнения эффективности людей</span></div>
+    <section class="panel table-wrap"><table><thead><tr><th>Команда</th><th>Сотрудников</th><th>Все пропуски</th><th>Связаны с целью</th></tr></thead><tbody>${overview.departments.map(item => `<tr><td>${escape(item.name)}</td><td>${item.employees}</td><td>${item.misses}</td><td>${item.importantMisses}</td></tr>`).join('')}</tbody></table></section>
+    <p class="footnote">Сравнительный рейтинг сотрудников не рассчитывается. Пойнты не используются HR как оценка эффективности. Данные — учебный набор Career Quest.</p>`;
 }
 
 function render() {
@@ -116,18 +150,14 @@ function render() {
   app.innerHTML = `<div class="shell"><aside class="sidebar"><div><div class="brand"><span class="brand-mark">${icon('chart', 23)}</span>Career Quest</div><div class="workspace">ПРОСТРАНСТВО РАЗВИТИЯ</div></div>
     <nav aria-label="Основные разделы"><p class="nav-label">Рабочее пространство</p><button class="nav-button ${view === 'employee' ? 'active' : ''}" ${view === 'employee' ? 'aria-current="page"' : ''} data-action="employee">${icon('road')}Мой рост</button>
       <button class="nav-button ${view === 'hr' ? 'active' : ''}" ${view === 'hr' ? 'aria-current="page"' : ''} data-action="hr">${icon('team')}Обзор HR</button></nav>
-    <div class="sidebar-note"><strong>Можно попробовать</strong>Выберите сотрудника, посмотрите причины рекомендаций и пройдите активность в демо.<br><br>Подбор работает по правилам. AI пока не подключён.</div>
-    <div class="sidebar-bottom"><span class="avatar">${view === 'hr' ? 'HR' : escape(initials(employee.full_name))}</span><div>${view === 'hr' ? 'Режим HR' : escape(employee.full_name.split(' ')[0])}<small>${view === 'hr' ? 'Демонстрация роли' : employee.grade + ' · учебный профиль'}</small></div></div></aside>
+    <div class="sidebar-note"><strong>Демо правил</strong>Навыки и требования взяты из набора Career Quest. Пойнты и шаги внутри API Testing помечены как временные правила.</div>
+    <div class="sidebar-bottom"><span class="avatar">${view === 'hr' ? 'HR' : escape(initials(employee.full_name))}</span><div>${view === 'hr' ? 'Режим HR' : escape(employee.full_name.split(' ')[0])}<small>${view === 'hr' ? 'Доступ к аналитике' : employee.grade + ' · личный кабинет'}</small></div></div></aside>
     <main class="main"><header class="topbar"><div class="breadcrumb"><span>Рабочее пространство /</span><strong>${view === 'hr' ? 'Обзор HR' : 'Мой рост'}</strong></div>
       <div class="top-actions"><span class="prototype-badge">Черновой прототип</span><button class="button secondary" data-action="reset">Сбросить демо</button></div></header>
-      <div class="content">${view === 'hr' ? hrPage() : employeePage(employee)}<p class="footnote">Модельная дата: ${date(data.asOf)} 2026 · HackAlem AI</p></div></main></div>`;
+      <div class="content">${view === 'hr' ? hrPage() : employeePage(employee)}<p class="footnote">Модельная дата: ${date(data.asOf)} · HackAlem AI</p></div></main></div>`;
 }
 
-function openDialog(content) {
-  dialog.innerHTML = content;
-  if (!dialog.open) dialog.showModal();
-}
-
+function openDialog(content) { dialog.innerHTML = content; if (!dialog.open) dialog.showModal(); }
 const dialogHead = heading => `<div class="dialog-head"><h2 id="dialog-title">${escape(heading)}</h2><button class="close" data-action="close" aria-label="Закрыть">×</button></div>`;
 
 function showDetails(id) {
@@ -136,19 +166,29 @@ function showDetails(id) {
   const item = model.recommend(employee).find(row => row.event.event_id === id);
   if (!item) return;
   openDialog(`${dialogHead(title(item.event))}<p>${escape(formats[item.event.format])} · ${item.event.duration_hours} ч · ${item.session ? date(item.session) : 'В любое время'}</p>
-    <div class="reason-block"><h3>01 · Ваша карьерная цель</h3><p>${escape(roleName(state.goal.role))}, ${state.goal.grade}. ${state.goal.assumed ? 'Это пока предположение — цель можно изменить.' : 'Цель указана в профиле.'}</p></div>
-    <div class="reason-block"><h3>02 · Конкретный вклад в навыки</h3><p>${item.impact.map(skill => `${escape(skill.name)}: ${skill.level} → ${skill.after}, требуется ${skill.required}${skill.critical ? ' (ключевой навык)' : ''}`).join('<br>')}</p></div>
-    <div class="reason-block"><h3>03 · История участия</h3><p>${item.successes ? `Завершённых активностей такого типа и формата: ${item.successes}. ` : 'Завершённых активностей такого типа и формата пока нет. '}${item.setbacks ? `Пропуски, отказы или прерывания: ${item.setbacks}. Этот сигнал снижает приоритет, но не определяет вашу мотивацию.` : 'Пропусков, отказов и прерываний такого типа и формата в истории нет.'}${item.ongoing ? ' Эта активность уже начата.' : ''}</p></div>
-    <div class="reason-block"><h3>04 · Доступность</h3><p>Подходит вашей текущей роли и грейду. ${Object.keys(item.event.prerequisites).length ? 'Предварительные требования к навыкам выполнены.' : 'Предварительных требований нет.'} ${item.event.event_id === 'EV_036' ? 'Клуб допускает повторное участие.' : 'Курс ещё не завершён.'}</p></div>
-    <p>Это объяснение по правилам датасета. Генеративный AI в прототипе не используется.</p><div class="dialog-actions"><button class="button" data-action="complete" data-event="${escape(id)}">Пройти в демо ${icon('check', 17)}</button></div>`);
+    <div class="reason-block"><h3>01 · Навык и его важность</h3><p>${item.impact.map(skill => `${escape(skill.name)}: ${skill.level} → ${skill.after}, для цели нужно ${skill.required}${skill.critical ? ' — ключевой навык' : ''}`).join('<br>')}</p></div>
+    <div class="reason-block"><h3>02 · Карьерный эффект</h3><p>Покрытие требований изменится с ${state.coverage}% до ${item.coverageAfter}%. Это вклад в готовность по навыкам, а не обещание повышения.</p></div>
+    <div class="reason-block"><h3>03 · Пойнты</h3><p>За следующий шаг: +${item.points}. Правило демонстрационное, потому что в API нет поля для пойнтов.</p></div>
+    <div class="reason-block"><h3>04 · Условия</h3><p>Активность подходит текущей роли и грейду. ${Object.keys(item.event.prerequisites).length ? 'Предварительные требования выполнены.' : 'Предварительных требований нет.'} ${item.event.event_id === 'EV_036' ? 'Повторное участие разрешено правилами.' : 'Повторное начисление за тот же шаг заблокировано.'}</p></div>
+    <div class="dialog-actions"><button class="button" data-action="complete" data-event="${escape(id)}">Завершить в демо ${icon('check', 17)}</button></div>`);
+}
+
+function showHrPerson(id) {
+  const employee = data.employees.find(person => person.employee_id === id);
+  const state = model.snapshot(employee);
+  const misses = model.importantMisses(employee);
+  if (!employee) return;
+  openDialog(`${dialogHead(employee.full_name)}<p>${escape(roleName(employee.role))} · ${employee.grade}. Цель: ${escape(roleName(state.goal.role))}, ${state.goal.grade}.</p>
+    ${misses.map(miss => `<div class="reason-block"><h3>${escape(miss.skill.name)} · ${miss.count} проп.</h3><p>Активность: ${escape(title(miss.event))}. Текущий уровень ${miss.skill.level}, требуется ${miss.skill.required}; не хватает ${miss.skill.gap}. ${miss.nextStep ? `Следующий доступный шаг: ${escape(title(miss.nextStep.event))}.` : 'Доступного следующего шага в каталоге нет.'}</p></div>`).join('') || '<p>Пропусков, связанных с незакрытыми требованиями цели, нет.</p>'}
+    <p>Этот индивидуальный контекст показывается только в HR-разделе.</p>`);
 }
 
 function goalDialog() {
   const state = model.snapshot(data.employees.find(person => person.employee_id === employeeId));
   const roleList = [...new Set(data.roleProfiles.map(item => item.role))];
-  openDialog(`${dialogHead('Куда вы хотите развиваться?')}<form id="goal-form"><label class="form-field">Роль<select name="role" aria-label="Роль">${roleList.map(role => `<option value="${escape(role)}" ${role === state.goal.role ? 'selected' : ''}>${escape(roleName(role))}</option>`).join('')}</select></label>
-    <label class="form-field">Грейд<select name="grade" aria-label="Грейд">${GRADES.map(grade => `<option ${grade === state.goal.grade ? 'selected' : ''}>${grade}</option>`).join('')}</select></label>
-    <p class="subtitle">Изменение цели пересчитает рекомендации. Это локальная симуляция; исходный профиль останется прежним.</p><div class="dialog-actions"><button type="button" class="button secondary" data-action="close">Отмена</button><button type="submit" class="button">Сохранить цель</button></div></form>`);
+  openDialog(`${dialogHead('Куда вы хотите развиваться?')}<form id="goal-form"><label class="form-field">Роль<select name="role">${roleList.map(role => `<option value="${escape(role)}" ${role === state.goal.role ? 'selected' : ''}>${escape(roleName(role))}</option>`).join('')}</select></label>
+    <label class="form-field">Грейд<select name="grade">${GRADES.map(grade => `<option ${grade === state.goal.grade ? 'selected' : ''}>${grade}</option>`).join('')}</select></label>
+    <p class="subtitle">Цель пересчитает важность навыков и рекомендации. Исходный профиль останется прежним.</p><div class="dialog-actions"><button type="button" class="button secondary" data-action="close">Отмена</button><button type="submit" class="button">Сохранить цель</button></div></form>`);
 }
 
 function action(event) {
@@ -157,44 +197,45 @@ function action(event) {
   const actionName = button.dataset.action;
   if (actionName === 'close') return dialog.close();
   if (actionName === 'details') return showDetails(button.dataset.event);
+  if (actionName === 'hr-person') return showHrPerson(button.dataset.person);
   if (actionName === 'goal') return goalDialog();
   if (actionName === 'skills') {
     const state = model.snapshot(data.employees.find(person => person.employee_id === employeeId));
-    return openDialog(`${dialogHead('Навыки для вашей цели')}<p style="margin-bottom:20px">Текущий уровень / требуемый уровень.</p>${state.requirements.map(skillRow).join('')}`);
+    return openDialog(`${dialogHead('Навыки для вашей цели')}<p>Текущий уровень / требуемый уровень.</p>${state.requirements.map(skillRow).join('')}`);
   }
   if (actionName === 'complete') {
-    if (model.complete(employeeId, button.dataset.event)) {
-      dialog.close(); render(); toast('Активность завершена в демо. Навыки и рекомендации пересчитаны.');
-    } else toast('Активность уже завершена или больше не подходит.');
+    const result = model.complete(employeeId, button.dataset.event);
+    if (result) {
+      dialog.close(); render();
+      toast(result.kind === 'session' ? `Сессия ${result.completed} из ${result.total} завершена: +${result.points} пойнт${result.finished ? '. Навык и карьерный прогресс обновлены.' : '. Навык вырастет после всей программы.'}` : `Активность завершена: +${result.points} пойнта. Навыки и цель пересчитаны.`);
+    } else toast('Этот шаг уже завершён или сейчас недоступен. Повторного начисления нет.');
     return;
   }
-  if (actionName === 'reset') { model.reset(); dialog.close(); render(); toast('Изменения демо сброшены. Исходные данные восстановлены.'); return; }
-  if (actionName === 'person') { employeeId = button.dataset.person; view = 'employee'; }
-  else view = actionName === 'hr' ? 'hr' : 'employee';
+  if (actionName === 'reset') { model.reset(); dialog.close(); render(); toast('Демо-действия сброшены. Исходные данные восстановлены.'); return; }
+  view = actionName === 'hr' ? 'hr' : 'employee';
   render(); window.scrollTo({ top: 0, behavior: 'instant' });
 }
 
 app.addEventListener('click', action);
 dialog.addEventListener('click', action);
-app.addEventListener('change', event => {
-  if (event.target.id === 'employee-picker') { employeeId = event.target.value; render(); document.querySelector('#employee-picker')?.focus(); }
-});
 dialog.addEventListener('submit', event => {
   if (event.target.id !== 'goal-form') return;
   event.preventDefault();
   const form = new FormData(event.target);
   if (model.setGoal(employeeId, form.get('role'), form.get('grade'))) {
-    dialog.close(); render(); toast('Цель обновлена. Подобрали следующие шаги.');
+    dialog.close(); render(); toast('Цель обновлена. Важность навыков и следующие шаги пересчитаны.');
   }
 });
 
 try {
-  const response = await fetch('./data.json');
-  if (!response.ok) throw new Error('Нет локального файла данных');
-  data = await response.json();
-  if (!data.employees?.length || !data.events?.length) throw new Error('Неполный набор данных');
-  model = createModel(data);
+  const [dataResponse, rulesResponse] = await Promise.all([fetch('./data.json'), fetch('./demo-rules.json')]);
+  if (!dataResponse.ok) throw new Error('Нет локального файла данных');
+  if (!rulesResponse.ok) throw new Error('Нет файла демонстрационных правил');
+  [data, demoRules] = await Promise.all([dataResponse.json(), rulesResponse.json()]);
+  if (!data.employees?.length || !data.events?.length || !data.roleProfiles?.length) throw new Error('Неполный набор данных');
+  if (demoRules.meta?.kind !== 'demo-only') throw new Error('Файл временных правил не помечен как demo-only');
+  model = createModel(data, demoRules);
   render();
 } catch (error) {
-  app.innerHTML = `<main class="loading"><h1>Не удалось открыть данные</h1><p>Подготовьте локальный набор командой из README прототипа и обновите страницу.</p><p>${escape(error.message)}</p></main>`;
+  app.innerHTML = `<main class="loading"><h1>Не удалось открыть данные</h1><p>Проверьте локальные JSON-файлы и обновите страницу.</p><p>${escape(error.message)}</p><button class="button" onclick="location.reload()">Повторить</button></main>`;
 }
