@@ -1,4 +1,5 @@
 import { applyGain, createModel, GRADES } from './model.mjs';
+import { connectBackend } from './api-client.mjs';
 
 const app = document.querySelector('#app');
 const dialog = document.querySelector('#details');
@@ -21,6 +22,7 @@ const eventTitles = ['Информационная безопасность', '�
   'Структурированное интервью', 'Разработка программ обучения', 'Мастерская переговоров',
   'Консультативные продажи', 'Сложные разговоры с клиентами', 'Решение технических проблем',
   'Клуб публичных выступлений', 'Траектория ментора', 'Основы лидерства', 'Время и приоритеты', 'Системное решение проблем'];
+const statusNames = { not_started: 'Не начато', completed: 'Завершено', in_progress: 'В процессе', no_show: 'Пропуск', declined: 'Отказ от участия', dropped: 'Прервано', overdue: 'Срок прошёл' };
 const formats = { online: 'Онлайн', offline: 'Очно', self_paced: 'В своём темпе' };
 const types = { course: 'Курс', workshop: 'Практикум', mentoring: 'Менторство', certification: 'Сертификация', meetup: 'Клуб', compliance: 'Обязательное', onboarding: 'Онбординг' };
 const paths = {
@@ -65,16 +67,16 @@ function courseCard(item, index) {
     <div class="career-effect"><span>Прогресс к цели</span><strong>${item.coverageAfter > item.coverage ? `${item.coverage}% → ${item.coverageAfter}%` : `ещё ${main.gap} ур.`}</strong></div>
     <div class="point-line">${icon('star', 16)} <b>+${item.points} пойнта</b><span>за завершение</span></div>
     <div class="course-actions"><button class="button secondary" data-action="details" data-event="${escape(event.event_id)}">Почему мне?</button>
-      <button class="button ghost" data-action="complete" data-event="${escape(event.event_id)}">Завершить в демо ${icon('arrow', 15)}</button></div>
+      <button class="button ghost" data-action="complete" data-event="${escape(event.event_id)}" ${model.isBackend && !item.canComplete ? 'disabled' : ''}>${model.isBackend ? 'Отметить выполнение' : 'Завершить в демо'} ${icon('arrow', 15)}</button></div>
   </article>`;
 }
 
 function sessionCard(employee, state, recommendation) {
-  const program = model.programProgress(employee, 'EV_019');
+  const program = model.programProgress(employee, recommendation?.event.event_id || 'EV_019');
   if (!program || !program.event.target_roles.includes(employee.role) || !program.event.target_grades.includes(employee.grade)) return '';
   const skill = state.requirements.find(item => item.id === program.rule.skillId);
   if (!skill) return '';
-  const affected = program.event.develops_skills.flatMap(item => {
+  const affected = model.isBackend ? (program.skillImpacts || []).map(s => `${s.name}: ${s.level} → ${s.after}`).join(' · ') : program.event.develops_skills.flatMap(item => {
     const requirement = state.requirements.find(row => row.id === item.skill_id);
     if (!requirement) return [];
     return [`${requirement.name}: ${requirement.level} → ${applyGain(requirement.level, item.gain, item.max_level)}`];
@@ -88,7 +90,7 @@ function sessionCard(employee, state, recommendation) {
     <div class="session-list">${program.sessions.map(item => `<div class="session-item ${item.completed ? 'done' : ''}"><span>${item.completed ? icon('check', 14) : item.index + 1}</span><div><b>${escape(item.label)}</b><small>${date(item.date)} · ${item.completed ? `завершено, +${program.rule.pointsPerSession} пойнт` : 'ещё не завершено'}</small></div></div>`).join('')}</div>
     <p class="course-reason"><strong>${escape(skill.name)}</strong> — ${skill.critical ? 'ключевой' : 'важный'} навык для ${escape(roleName(state.goal.role))}, ${state.goal.grade}. ${program.finished ? `После программы уровень обновлён до ${skill.level}; до требования осталось ${skill.gap}.` : `После всех сессий: ${escape(affected)}; прогресс к цели ${state.coverage}% → ${coverageAfter}%.`}</p>
     <div class="point-line">${icon('star', 16)} <b>+${program.rule.pointsPerSession} пойнт</b><span>за каждую завершённую сессию</span></div>
-    <button class="button session-button" data-action="complete" data-event="${program.event.event_id}" ${program.finished || !recommendation ? 'disabled' : ''}>${program.finished ? `Получено ${program.totalPoints} пойнта` : `Завершить сессию ${program.completed + 1}`}</button>
+    <button class="button session-button" data-action="complete" data-event="${program.event.event_id}" ${program.finished || !recommendation || (model.isBackend && !recommendation.canComplete) ? 'disabled' : ''}>${program.finished ? `Получено ${program.totalPoints} пойнта` : `Завершить сессию ${program.completed + 1}`}</button>
   </article>`;
 }
 
@@ -102,13 +104,14 @@ function employeePage(employee) {
   const state = model.snapshot(employee);
   const recommendations = model.recommend(employee).map(item => ({ ...item, coverage: state.coverage }));
   const programRecommendation = recommendations.find(item => item.event.event_id === 'EV_019');
-  const recs = recommendations.filter(item => item.event.event_id !== 'EV_019').slice(0, 2);
+  const recs = recommendations.filter(item => item.event.event_id !== 'EV_019').slice(0, programRecommendation ? 2 : 3);
   const miss = model.importantMisses(employee)[0];
   const sameRole = state.goal.role === employee.role;
   const goalHeading = sameRole ? `${employee.grade} → ${state.goal.grade}` : `${roleName(state.goal.role)} · ${state.goal.grade}`;
   const goalDescription = state.goal.assumed ? 'Цель пока не задана. Мы показали возможный ориентир — его можно изменить.'
     : `Ваша цель: ${roleName(state.goal.role)}. ${state.gaps.length ? `До неё нужно развить ${state.gaps.length} навыков.` : 'Требования по навыкам закрыты; следующий шаг обсудите с руководителем.'}`;
-  const session = sessionCard(employee, state, programRecommendation);
+  const session = programRecommendation ? sessionCard(employee, state, programRecommendation) : '';
+  const cards = recommendations.slice(0, 3).map((item, i) => item.program ? sessionCard(employee, state, item) : courseCard(item, i)).join('');
   return `<div class="page-heading"><div><h1>Мой план развития</h1><p class="subtitle">${escape(employee.full_name)} · ${escape(roleName(employee.role))} · ${employee.grade}</p></div>
     <div class="points-total"><span>${icon('star', 18)} Накоплено</span><b>${state.totalPoints}</b><small>демо-пойнтов</small></div></div>
     <section class="hero" aria-label="Карьерная цель"><div><p class="eyebrow">${state.goal.assumed ? 'Возможная траектория' : 'Ваша траектория'}</p><h2>${escape(goalHeading)}</h2>
@@ -117,17 +120,18 @@ function employeePage(employee) {
       <div class="ring" style="--value:${state.coverage}"><div class="ring-inner"><b>${state.coverage}%</b><span>требований по навыкам закрыто</span></div></div></section>
     ${missedBanner(miss)}
     <div class="section-head"><h2>Активности и вклад в карьерную цель</h2><span>Пойнты мотивируют, уровни навыков определяют прогресс</span></div>
-    ${session || recs.length ? `<div class="cards ${session ? 'with-session' : ''}">${session}${recs.map(courseCard).join('')}</div>` : `<div class="empty"><h3>${state.gaps.length ? 'В каталоге пока нет подходящего шага' : 'Требования по навыкам закрыты'}</h3><p>${state.gaps.length ? 'Проверены роль, грейд, условия участия и история. Можно обсудить новую активность с HR.' : 'Завершённые курсы не означают автоматическое повышение.'}</p></div>`}
+    ${session || recs.length ? `<div class="cards ${session ? 'with-session' : ''}">${cards}</div>` : `<div class="empty"><h3>${state.gaps.length ? 'В каталоге пока нет подходящего шага' : 'Требования по навыкам закрыты'}</h3><p>${state.gaps.length ? 'Проверены роль, грейд, условия участия и история. Можно обсудить новую активность с HR.' : 'Завершённые курсы не означают автоматическое повышение.'}</p></div>`}
+    ${model.isBackend ? '<button class="button secondary" data-action="catalog">Все активности и сессии</button>' : ''}
     <div class="two-columns"><section class="panel"><h2>Навыки для цели</h2><p class="panel-intro">Текущий уровень / требуемый. Сначала показаны ключевые навыки.</p>${state.requirements.slice(0, 6).map(skillRow).join('') || '<p class="subtitle">Для выбранной цели требования не найдены.</p>'}
       ${state.requirements.length > 6 ? `<button class="button ghost" data-action="skills">Все навыки (${state.requirements.length}) ${icon('arrow', 15)}</button>` : ''}</section>
-      <section class="panel"><h2>История начислений</h2><p class="panel-intro">За какое действие, когда и сколько пойнтов начислено.</p>${state.pointLedger.slice(0, 6).map(row => `<div class="point-history"><span class="history-icon">${icon('star', 14)}</span><div><strong>${escape(title(model.eventMap.get(row.eventId)))}</strong><p>${escape(row.action.replace(model.eventMap.get(row.eventId)?.title || '', '').replace(/^: /, '') || 'Активность завершена')} · ${date(row.date)}</p></div><b>+${row.points}</b></div>`).join('') || '<div class="empty compact"><p>Начислений пока нет. Завершите первую активность.</p></div>'}<p class="demo-caption">Начисления рассчитаны по временным правилам из отдельного файла. В исходном API поля пойнтов нет.</p></section></div>
-    <p class="footnote">Пойнты не заменяют уровни навыков и требования грейда. Пропуски не уменьшают пойнты или достигнутый уровень. Все действия демо сбрасываются при обновлении страницы.</p>`;
+      <section class="panel"><h2>История начислений</h2><p class="panel-intro">За какое действие, когда и сколько пойнтов начислено.</p>${state.pointLedger.slice(0, 6).map(row => `<div class="point-history"><span class="history-icon">${icon('star', 14)}</span><div><strong>${escape(title(model.eventMap.get(row.eventId)))}</strong><p>${escape(row.action.replace(model.eventMap.get(row.eventId)?.title || '', '').replace(/^: /, '') || 'Активность завершена')} · ${date(row.date)}</p></div><b>+${row.points}</b></div>`).join('') || '<div class="empty compact"><p>Начислений пока нет. Завершите первую активность.</p></div>'}<p class="demo-caption">Начисления рассчитаны по временным правилам из отдельного файла. Исторические начисления ретроспективные; правила пойнтов демонстрационные.</p></section></div>
+    <p class="footnote">Пойнты не заменяют уровни навыков и требования грейда. Пропуски не уменьшают пойнты или достигнутый уровень. ${model.isBackend ? 'Цель, навыки и начисления сохраняются на сервере.' : 'Все действия демо сбрасываются при обновлении страницы.'}</p>`;
 }
 
 function hrPage() {
   const overview = model.overview();
   const people = overview.repeatedImportantMisses.slice(0, 8);
-  return `<div class="page-heading"><div><h1>Участие в развитии</h1><p class="subtitle">Пропуски в контексте карьерных целей, без рейтинга сотрудников.</p></div><span class="tag">HR-раздел · ${data.employees.length} профилей</span></div>
+  return `<div class="page-heading"><div><h1>Участие в развитии</h1><p class="subtitle">Пропуски в контексте карьерных целей, без рейтинга сотрудников.</p></div><span class="tag">HR-раздел · ${overview.employeeCount ?? data.employees.length} профилей</span></div>
     <div class="notice">Индивидуальная история доступна только здесь, в HR-разделе. Причина пропуска неизвестна, поэтому данные служат сигналом для поддержки, а не оценкой сотрудника.</div>
     <div class="stats"><div class="stat"><span>Всего пропусков</span><b>${overview.totalMisses}</b><small>Статус no_show в истории</small></div>
       <div class="stat"><span>Повторные важные пропуски</span><b>${overview.repeatedImportantMisses.length}</b><small>2+ пропуска, связанных с целью</small></div>
@@ -137,6 +141,10 @@ function hrPage() {
       ${overview.eventMisses.slice(0, 6).map(item => `<div class="metric-row"><span>${escape(title(item.event))}<small>${item.employees} сотрудников</small></span><b>${item.count} проп.</b></div>`).join('') || '<p class="subtitle">Пропусков нет.</p>'}</section>
       <section class="panel"><h2>Навыки, связанные с пропусками</h2><p class="panel-intro">Учитываются только навыки, которые нужны для выбранной цели и пока не достигнуты.</p>
       ${overview.missedSkills.slice(0, 6).map(item => `<div class="skill"><div class="skill-line"><span>${escape(item.name)}<small>${item.employees} сотрудников</small></span><b>${item.misses} проп.</b></div><div class="meter warning"><span style="width:${Math.min(100, item.misses / Math.max(1, overview.totalMisses) * 300)}%"></span></div></div>`).join('') || '<p class="subtitle">Связанных с целями пропусков нет.</p>'}</section></div>
+    ${model.isBackend ? `<div class="two-columns"><section class="panel"><h2>Частые пробелы навыков</h2>${overview.shortages.slice(0, 6).map(s => `<div class="metric-row"><span>${escape(s.name)}</span><b>${s.count} чел.</b></div>`).join('')}</section>
+      <section class="panel"><h2>Участие и карьерные цели</h2><p>Без заданной цели: ${overview.noGoal}. Завершено активностей: ${overview.activityCount}.</p>${Object.entries(overview.participation).map(([status, count]) => `<div class="metric-row"><span>${escape(statusNames[status] || status)}</span><b>${count}</b></div>`).join('')}</section></div>
+      <div class="two-columns"><section class="panel"><h2>Нужно выбрать цель</h2>${overview.employeesWithoutGoal.slice(0, 6).map(e => `<div class="metric-row"><span>${escape(e.full_name)}</span><button class="row-button" data-action="hr-person" data-person="${escape(e.employee_id)}">Подробнее →</button></div>`).join('') || '<p>Цели заданы всем.</p>'}<p>Показаны первые 6; всего ${overview.noGoal}.</p></section>
+      <section class="panel"><h2>Нет подходящей активности</h2>${overview.noSteps.slice(0, 6).map(s => `<div class="metric-row"><span>${escape(s.employee.full_name)}</span><button class="row-button" data-action="hr-person" data-person="${escape(s.employee.employee_id)}">Подробнее →</button></div>`).join('') || '<p>Следующие шаги найдены.</p>'}<p>Показаны первые 6; всего ${overview.noSteps.length}.</p></section></div>` : ''}
     <div class="section-head"><h2>Кому может понадобиться поддержка</h2><span>Повторные пропуски важных активностей · алфавитный порядок</span></div>
     <section class="panel table-wrap">${people.length ? `<table><thead><tr><th>Сотрудник</th><th>Карьерная цель</th><th>Связанные навыки</th><th>Пропуски</th><th></th></tr></thead><tbody>${people.map(item => `<tr><td><div class="person-cell"><span class="avatar">${escape(initials(item.state.employee.full_name))}</span><span>${escape(item.state.employee.full_name)}<small>${escape(roleName(item.state.employee.role))} · ${item.state.employee.grade}</small></span></div></td><td>${escape(roleName(item.state.goal.role))}<small>${item.state.goal.grade}${item.state.goal.assumed ? ' · предполагаемая' : ''}</small></td><td>${escape([...new Set(item.misses.map(miss => miss.skill.name))].slice(0, 2).join(', '))}</td><td>${item.importantCount}</td><td><button class="row-button" data-action="hr-person" data-person="${item.state.employee.employee_id}">Подробнее →</button></td></tr>`).join('')}</tbody></table>` : '<p class="subtitle">Повторных пропусков важных активностей нет.</p>'}</section>
     <div class="section-head"><h2>Агрегация по командам</h2><span>Количество, без сравнения эффективности людей</span></div>
@@ -149,11 +157,11 @@ function render() {
   employeeId = employee.employee_id;
   app.innerHTML = `<div class="shell"><aside class="sidebar"><div><div class="brand"><span class="brand-mark">${icon('chart', 23)}</span>Career Quest</div><div class="workspace">ПРОСТРАНСТВО РАЗВИТИЯ</div></div>
     <nav aria-label="Основные разделы"><p class="nav-label">Рабочее пространство</p><button class="nav-button ${view === 'employee' ? 'active' : ''}" ${view === 'employee' ? 'aria-current="page"' : ''} data-action="employee">${icon('road')}Мой рост</button>
-      <button class="nav-button ${view === 'hr' ? 'active' : ''}" ${view === 'hr' ? 'aria-current="page"' : ''} data-action="hr">${icon('team')}Обзор HR</button></nav>
+      ${!model.isBackend || data.user.role === 'hr' ? `<button class="nav-button ${view === 'hr' ? 'active' : ''}" ${view === 'hr' ? 'aria-current="page"' : ''} data-action="hr">${icon('team')}Обзор HR</button>` : ''}</nav>
     <div class="sidebar-note"><strong>Демо правил</strong>Навыки и требования взяты из набора Career Quest. Пойнты и шаги внутри API Testing помечены как временные правила.</div>
     <div class="sidebar-bottom"><span class="avatar">${view === 'hr' ? 'HR' : escape(initials(employee.full_name))}</span><div>${view === 'hr' ? 'Режим HR' : escape(employee.full_name.split(' ')[0])}<small>${view === 'hr' ? 'Доступ к аналитике' : employee.grade + ' · личный кабинет'}</small></div></div></aside>
     <main class="main"><header class="topbar"><div class="breadcrumb"><span>Рабочее пространство /</span><strong>${view === 'hr' ? 'Обзор HR' : 'Мой рост'}</strong></div>
-      <div class="top-actions"><span class="prototype-badge">Черновой прототип</span><button class="button secondary" data-action="reset">Сбросить демо</button></div></header>
+      <div class="top-actions"><span class="prototype-badge">Черновой прототип</span><button class="button secondary" data-action="reset">${model.isBackend ? 'Обновить данные' : 'Сбросить демо'}</button>${model.isBackend ? '<button class="button secondary" data-action="logout">Выйти</button>' : ''}</div></header>
       <div class="content">${view === 'hr' ? hrPage() : employeePage(employee)}<p class="footnote">Модельная дата: ${date(data.asOf)} · HackAlem AI</p></div></main></div>`;
 }
 
@@ -168,18 +176,18 @@ function showDetails(id) {
   openDialog(`${dialogHead(title(item.event))}<p>${escape(formats[item.event.format])} · ${item.event.duration_hours} ч · ${item.session ? date(item.session) : 'В любое время'}</p>
     <div class="reason-block"><h3>01 · Навык и его важность</h3><p>${item.impact.map(skill => `${escape(skill.name)}: ${skill.level} → ${skill.after}, для цели нужно ${skill.required}${skill.critical ? ' — ключевой навык' : ''}`).join('<br>')}</p></div>
     <div class="reason-block"><h3>02 · Карьерный эффект</h3><p>Покрытие требований изменится с ${state.coverage}% до ${item.coverageAfter}%. Это вклад в готовность по навыкам, а не обещание повышения.</p></div>
-    <div class="reason-block"><h3>03 · Пойнты</h3><p>За следующий шаг: +${item.points}. Правило демонстрационное, потому что в API нет поля для пойнтов.</p></div>
-    <div class="reason-block"><h3>04 · Условия</h3><p>Активность подходит текущей роли и грейду. ${Object.keys(item.event.prerequisites).length ? 'Предварительные требования выполнены.' : 'Предварительных требований нет.'} ${item.event.event_id === 'EV_036' ? 'Повторное участие разрешено правилами.' : 'Повторное начисление за тот же шаг заблокировано.'}</p></div>
-    <div class="dialog-actions"><button class="button" data-action="complete" data-event="${escape(id)}">Завершить в демо ${icon('check', 17)}</button></div>`);
+    <div class="reason-block"><h3>03 · Пойнты</h3><p>За следующий шаг: +${item.points}. Награда определена временными правилами проекта; исходный датасет не содержит пойнтов.</p></div>
+    <div class="reason-block"><h3>04 · Условия</h3><p>Активность подходит текущей роли и грейду. ${Object.keys(item.event.prerequisites).length ? 'Предварительные требования выполнены.' : 'Предварительных требований нет.'} ${(model.isBackend ? item.repeatAllowed : item.event.event_id === 'EV_036') ? 'Повторное участие разрешено правилами.' : 'Повторное начисление за тот же шаг заблокировано.'}</p></div>
+    <div class="dialog-actions"><button class="button" data-action="complete" data-event="${escape(id)}" ${model.isBackend && !item.canComplete ? 'disabled' : ''}>${model.isBackend ? 'Отметить выполнение' : 'Завершить в демо'} ${icon('check', 17)}</button></div>`);
 }
 
-function showHrPerson(id) {
-  const employee = data.employees.find(person => person.employee_id === id);
+async function showHrPerson(id) {
+  const employee = model.isBackend ? (await model.hrProfile(id)).employee : data.employees.find(person => person.employee_id === id);
   const state = model.snapshot(employee);
   const misses = model.importantMisses(employee);
   if (!employee) return;
   openDialog(`${dialogHead(employee.full_name)}<p>${escape(roleName(employee.role))} · ${employee.grade}. Цель: ${escape(roleName(state.goal.role))}, ${state.goal.grade}.</p>
-    ${misses.map(miss => `<div class="reason-block"><h3>${escape(miss.skill.name)} · ${miss.count} проп.</h3><p>Активность: ${escape(title(miss.event))}. Текущий уровень ${miss.skill.level}, требуется ${miss.skill.required}; не хватает ${miss.skill.gap}. ${miss.nextStep ? `Следующий доступный шаг: ${escape(title(miss.nextStep.event))}.` : 'Доступного следующего шага в каталоге нет.'}</p></div>`).join('') || '<p>Пропусков, связанных с незакрытыми требованиями цели, нет.</p>'}
+    ${misses.map(miss => `<div class="reason-block"><h3>${escape(miss.skill.name)} · ${miss.count} проп.</h3><p>Активность: ${escape(title(miss.event))}. Текущий уровень ${miss.skill.level}, требуется ${miss.skill.required}; не хватает ${miss.skill.gap}. ${miss.nextStep ? `Следующий доступный шаг: ${escape(title(miss.nextStep.event))}.` : 'В текущей подборке нет следующего шага для этого навыка.'}</p></div>`).join('') || '<p>Пропусков, связанных с незакрытыми требованиями цели, нет.</p>'}
     <p>Этот индивидуальный контекст показывается только в HR-разделе.</p>`);
 }
 
@@ -188,46 +196,73 @@ function goalDialog() {
   const roleList = [...new Set(data.roleProfiles.map(item => item.role))];
   openDialog(`${dialogHead('Куда вы хотите развиваться?')}<form id="goal-form"><label class="form-field">Роль<select name="role">${roleList.map(role => `<option value="${escape(role)}" ${role === state.goal.role ? 'selected' : ''}>${escape(roleName(role))}</option>`).join('')}</select></label>
     <label class="form-field">Грейд<select name="grade">${GRADES.map(grade => `<option ${grade === state.goal.grade ? 'selected' : ''}>${grade}</option>`).join('')}</select></label>
-    <p class="subtitle">Цель пересчитает важность навыков и рекомендации. Исходный профиль останется прежним.</p><div class="dialog-actions"><button type="button" class="button secondary" data-action="close">Отмена</button><button type="submit" class="button">Сохранить цель</button></div></form>`);
+    <p class="subtitle">Цель пересчитает важность навыков и рекомендации. ${model.isBackend ? 'Выбранная цель будет сохранена.' : 'Исходный профиль останется прежним.'}</p><div class="dialog-actions"><button type="button" class="button secondary" data-action="close">Отмена</button><button type="submit" class="button">Сохранить цель</button></div></form>`);
 }
 
-function action(event) {
+async function action(event) {
   const button = event.target.closest('[data-action]');
   if (!button) return;
   const actionName = button.dataset.action;
   if (actionName === 'close') return dialog.close();
   if (actionName === 'details') return showDetails(button.dataset.event);
   if (actionName === 'hr-person') return showHrPerson(button.dataset.person);
+  if (actionName === 'catalog') return showCatalog();
+  if (actionName === 'logout') { await model.logout(); location.reload(); return; }
   if (actionName === 'goal') return goalDialog();
   if (actionName === 'skills') {
     const state = model.snapshot(data.employees.find(person => person.employee_id === employeeId));
     return openDialog(`${dialogHead('Навыки для вашей цели')}<p>Текущий уровень / требуемый уровень.</p>${state.requirements.map(skillRow).join('')}`);
   }
   if (actionName === 'complete') {
-    const result = model.complete(employeeId, button.dataset.event);
+    if (button.disabled) return;
+    button.disabled = true;
+    let result;
+    try { result = await model.complete(employeeId, button.dataset.event, button.dataset.session); }
+    finally { button.disabled = false; }
     if (result) {
       dialog.close(); render();
       toast(result.kind === 'session' ? `Сессия ${result.completed} из ${result.total} завершена: +${result.points} пойнт${result.finished ? '. Навык и карьерный прогресс обновлены.' : '. Навык вырастет после всей программы.'}` : `Активность завершена: +${result.points} пойнта. Навыки и цель пересчитаны.`);
     } else toast('Этот шаг уже завершён или сейчас недоступен. Повторного начисления нет.');
     return;
   }
-  if (actionName === 'reset') { model.reset(); dialog.close(); render(); toast('Демо-действия сброшены. Исходные данные восстановлены.'); return; }
+  if (actionName === 'reset') { await model.reset(); if (view === 'hr' && model.isBackend) await model.loadHr(); dialog.close(); render(); toast(model.isBackend ? 'Данные обновлены.' : 'Демо-действия сброшены.'); return; }
+  if (actionName === 'hr' && model.isBackend) await model.loadHr();
   view = actionName === 'hr' ? 'hr' : 'employee';
   render(); window.scrollTo({ top: 0, behavior: 'instant' });
 }
 
-app.addEventListener('click', action);
-dialog.addEventListener('click', action);
-dialog.addEventListener('submit', event => {
+const onAction = event => action(event).catch(error => toast(error.message));
+app.addEventListener('click', onAction);
+dialog.addEventListener('click', onAction);
+dialog.addEventListener('submit', async event => {
   if (event.target.id !== 'goal-form') return;
   event.preventDefault();
-  const form = new FormData(event.target);
-  if (model.setGoal(employeeId, form.get('role'), form.get('grade'))) {
-    dialog.close(); render(); toast('Цель обновлена. Важность навыков и следующие шаги пересчитаны.');
-  }
+  const form = new FormData(event.target), button = event.target.querySelector('[type="submit"]');
+  button.disabled = true;
+  try {
+    if (await model.setGoal(employeeId, form.get('role'), form.get('grade'))) {
+      dialog.close(); render(); toast('Цель сохранена. Рекомендации пересчитаны.');
+    }
+  } catch (error) { toast(error.message); }
+  finally { button.disabled = false; }
 });
 
+function showCatalog() {
+  const items = model.catalog();
+  openDialog(`${dialogHead('Активности и сессии')}${items.map(item => `<section class="reason-block"><h3>${escape(title(item.event))}</h3>
+    <p>${escape(formats[item.event.format])} · Сессий: ${item.sessionCount} · Повтор: ${item.repeatAllowed ? 'по новой сессии' : 'нет'}</p>
+    <p>${item.event.develops_skills.map(g => `${escape(model.skillMap.get(g.skill_id)?.name)}: прирост ${g.gain}, потолок ${g.max_level}`).join('; ') || 'Без прироста навыков'} · Награда: ${item.pointsReward}</p>
+    ${item.unavailableReasons.includes('ROLE_NOT_ALLOWED') || item.unavailableReasons.includes('GRADE_NOT_ALLOWED') ? '<p>Не подходит текущей роли или грейду.</p>' : item.unavailableReasons.includes('PREREQUISITES_NOT_MET') ? '<p>Сначала нужно выполнить предварительные требования по навыкам.</p>' : ''}
+    <p>Статус участия: ${escape(statusNames[item.status] || item.status)}</p>
+    ${item.sessions.map(session => `<div class="metric-row"><span>${escape(session.label)} · ${date(session.date)}<small>${escape(statusNames[session.participationStatus] || session.participationStatus)}${session.date > data.asOf ? ' · запланировано' : ''}</small></span><button class="button secondary" data-action="complete" data-event="${escape(item.event.event_id)}" data-session="${escape(session.session_id)}" ${session.canComplete ? '' : 'disabled'}>Завершить</button></div>`).join('')}
+    ${!item.sessions.length ? `<button class="button secondary" data-action="complete" data-event="${escape(item.event.event_id)}" ${item.canComplete ? '' : 'disabled'}>Завершить активность</button>` : ''}
+    ${item.program?.historicalCompletion ? '<p>Программа завершена в импортированной истории; даты отдельных исторических сессий неизвестны.</p>' : ''}
+  </section>`).join('')}`);
+}
+
 try {
+  const backend = await connectBackend(app);
+  if (backend) { ({ data, demoRules, model, employeeId } = backend); } else {
   const [dataResponse, rulesResponse] = await Promise.all([fetch('./data.json'), fetch('./demo-rules.json')]);
   if (!dataResponse.ok) throw new Error('Нет локального файла данных');
   if (!rulesResponse.ok) throw new Error('Нет файла демонстрационных правил');
@@ -235,7 +270,8 @@ try {
   if (!data.employees?.length || !data.events?.length || !data.roleProfiles?.length) throw new Error('Неполный набор данных');
   if (demoRules.meta?.kind !== 'demo-only') throw new Error('Файл временных правил не помечен как demo-only');
   model = createModel(data, demoRules);
+  }
   render();
 } catch (error) {
-  app.innerHTML = `<main class="loading"><h1>Не удалось открыть данные</h1><p>Проверьте локальные JSON-файлы и обновите страницу.</p><p>${escape(error.message)}</p><button class="button" onclick="location.reload()">Повторить</button></main>`;
+  app.innerHTML = `<main class="loading"><h1>Не удалось открыть данные</h1><p>Проверьте запуск сервера и обновите страницу.</p><p>${escape(error.message)}</p><a class="button" href="/">Повторить</a></main>`;
 }
