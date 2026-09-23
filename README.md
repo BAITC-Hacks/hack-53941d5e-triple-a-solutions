@@ -4,6 +4,21 @@
 Добавлен черновой интерактивный прототип Career Quest на датасете организаторов.
 Это макет для знакомства с продуктом. Добавлен серверный AI-подбор с проверкой ответа и резервным подбором по правилам. Реальное качество AI требует проверки с выбранной моделью; импорт профилей и истории доступен с предпросмотром и отменой. Авторизация пока не реализована.
 
+## Последняя версия для команды
+
+Версия с AI-помощниками, картой развития, мастерской HR и импортом жюри находится
+в ветке **codex/employee-navigator**: [открыть эту ветку](https://github.com/BAITC-Hacks/hack-53941d5e-triple-a-solutions/tree/codex/employee-navigator).
+Обсуждение изменений — [черновик PR №2](https://github.com/BAITC-Hacks/hack-53941d5e-triple-a-solutions/pull/2).
+
+Для просмотра без Git: откройте ссылку на ветку → **Code → Download ZIP**, распакуйте
+архив и запустите `start-prototype.cmd` на Windows или `node scripts/serve.mjs`
+на macOS/Linux. Нужен Node.js 22+. Затем откройте http://127.0.0.1:4173
+**на своём ноутбуке** и оставьте окно сервера открытым.
+
+Интерфейс и расчёты запускаются без ключа. Для ответов AI на другом ноутбуке нужно
+локально заполнить `.env.local`; ключ автора в GitHub и ZIP не передаётся.
+[Подробная инструкция для команды](docs/team-preview.md).
+
 ## Открыть прототип Career Quest
 
 Из корня репозитория, Node.js 22+ (без установки пакетов):
@@ -27,7 +42,7 @@ node scripts/serve.mjs
 ## Начать работу
 
 ```sh
-git clone https://github.com/BAITC-Hacks/hack-53941d5e-triple-a-solutions.git
+git clone --branch codex/employee-navigator https://github.com/BAITC-Hacks/hack-53941d5e-triple-a-solutions.git
 cd hack-53941d5e-triple-a-solutions
 ```
 
